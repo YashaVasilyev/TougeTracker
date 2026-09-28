@@ -18,7 +18,6 @@ struct RouteBrowserView: View {
     @State private var selectedRoad: TougeRoad?
     /// Set when the user taps "Details" on the preview card to open the full sheet.
     @State private var detailedRoad: TougeRoad?
-    @State private var selectedFeature: MapFeature?
     @State private var isLoading = false
     @State private var searchText = ""
 
@@ -27,64 +26,65 @@ struct RouteBrowserView: View {
 
     var body: some View {
         NavigationStack {
-            Map(position: $position, selection: $selectedFeature) {
-                roadOverlays
-                savedRouteAnnotations
-                userMarker
-            }
-            .mapStyle(.standard)
-            // Fires continuously while panning/zooming, unlike onChange of the
-            // camera binding — this is what makes roads rescore as you scroll.
-            .onMapCameraChange(frequency: .onEnd) { context in
-                visibleRegion = context.region
-                loadVisibleRoads()
-            }
-            .onChange(of: selectedFeature) { _, feature in
-                if let feature = feature {
-                    selectedRoad = nearestRoad(to: feature.coordinate, in: visibleRoads)
-                } else {
-                    selectedRoad = nil
+            MapReader { proxy in
+                Map(position: $position) {
+                    roadOverlays
+                    savedRouteAnnotations
+                    userMarker
                 }
-            }
-            .overlay(alignment: .top) {
-                topOverlay
-            }
-            .overlay(alignment: .bottom) {
-                if let road = selectedRoad {
-                    RoadPreviewCard(
-                        road: road,
-                        settings: settings,
-                        isSaved: store.isSaved(id: road.id),
-                        onSave: { _ = store.saveRoute(road) },
-                        onStart: { startDrive(road) },
-                        onDetails: { detailedRoad = road },
-                        onDismiss: { selectedRoad = nil }
-                    )
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                .mapStyle(.standard)
+                // Fires continuously while panning/zooming, unlike onChange of the
+                // camera binding — this is what makes roads rescore as you scroll.
+                .onMapCameraChange(frequency: .onEnd) { context in
+                    visibleRegion = context.region
+                    loadVisibleRoads()
                 }
-            }
-            .animation(.snappy(duration: 0.25), value: selectedRoad?.id)
-            .navigationTitle("Plan")
-            .searchable(text: $searchText)
-            .onChange(of: searchText) { _, _ in
-                searchLocation()
-            }
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Near me") {
-                        Task { await centerOnUser() }
+                // MapPolyline is not selectable, so `Map(selection:)` never fires
+                // for roads. Hit-test the tap ourselves against visible geometry.
+                .onTapGesture { screenPoint in
+                    guard let coordinate = proxy.convert(screenPoint, from: .local) else { return }
+                    selectedRoad = nearestRoad(to: coordinate, in: visibleRoads)
+                }
+                .overlay(alignment: .top) {
+                    topOverlay
+                }
+                .overlay(alignment: .bottom) {
+                    if let road = selectedRoad {
+                        RoadPreviewCard(
+                            road: road,
+                            settings: settings,
+                            isSaved: store.isSaved(id: road.id),
+                            onSave: { _ = store.saveRoute(road) },
+                            onStart: { startDrive(road) },
+                            onDetails: { detailedRoad = road },
+                            onDismiss: { selectedRoad = nil }
+                        )
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
-                    .disabled(locationReader.loading)
                 }
-            }
-            .sheet(item: $detailedRoad) { road in
-                NavigationStack {
-                    RouteDetailView(road: road)
+                .animation(.snappy(duration: 0.25), value: selectedRoad?.id)
+                .navigationTitle("Plan")
+                .searchable(text: $searchText)
+                .onChange(of: searchText) { _, _ in
+                    searchLocation()
                 }
-            }
-            .task {
-                locationReader.requestAuthorization()
-                loadVisibleRoads()
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        Button("Near me") {
+                            Task { await centerOnUser() }
+                        }
+                        .disabled(locationReader.loading)
+                    }
+                }
+                .sheet(item: $detailedRoad) { road in
+                    NavigationStack {
+                        RouteDetailView(road: road)
+                    }
+                }
+                .task {
+                    locationReader.requestAuthorization()
+                    loadVisibleRoads()
+                }
             }
         }
     }
@@ -294,21 +294,42 @@ struct RouteBrowserView: View {
 
     // MARK: - Tap handling
 
+    /// Finds the road whose geometry passes closest to a tapped coordinate.
+    ///
+    /// The tolerance scales with the visible span. A fixed 50m radius is
+    /// effectively untappable when zoomed out (a 0.25° region spans ~28km, so
+    /// 50m is a fraction of a percent of the screen) but far too greedy when
+    /// zoomed all the way in. Clamped to roughly 15–400m.
     private func nearestRoad(to point: CLLocationCoordinate2D, in roads: [TougeRoad]) -> TougeRoad? {
-        let threshold: CLLocationDistance = 50
+        let spanKm = max(visibleRegion.span.latitudeDelta, visibleRegion.span.longitudeDelta) * 111.0
+        let threshold = min(max(spanKm * 1000 * 0.012, 15), 400)
+        let tapped = GeoPoint.from(point)
+
         var nearest: (road: TougeRoad, distance: CLLocationDistance)?
         for road in roads {
             guard road.geoPoints.count >= 2 else { continue }
+            // Cheap reject before the per-point distance loop.
+            guard let centerLat = road.centerLat, let centerLon = road.centerLon,
+                  GeoMath.distanceMeters(
+                      tapped,
+                      GeoPoint(lon: centerLon, lat: centerLat)
+                  ) <= threshold + roadSpanRadius(road) else { continue }
+
             for gp in road.geoPoints {
-                let dist = GeoMath.distanceMeters(GeoPoint.from(point), gp)
-                if dist <= threshold {
-                    if nearest == nil || dist < nearest!.distance {
-                        nearest = (road, dist)
-                    }
+                let dist = GeoMath.distanceMeters(tapped, gp)
+                if dist <= threshold,
+                   nearest == nil || dist < nearest!.distance {
+                    nearest = (road, dist)
                 }
             }
         }
         return nearest?.road
+    }
+
+    /// Half the road's own length, so long roads stay hittable near their ends
+    /// even when the tap is far from the midpoint.
+    private func roadSpanRadius(_ road: TougeRoad) -> CLLocationDistance {
+        max(0, road.lengthMeters / 2)
     }
 
     // MARK: - Styling
