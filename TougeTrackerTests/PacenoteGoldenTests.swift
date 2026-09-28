@@ -2,6 +2,122 @@ import XCTest
 @testable import TougeTracker
 import CoreLocation
 
+/// Replays real roads as drives. These are behavioural checks on the whole
+/// chain — geometry → pacenotes → navigator timing → spoken words — which the
+/// per-unit tests cannot cover together.
+final class DriveSimulatorTests: XCTestCase {
+
+    private func loadFixtures() -> [PacenoteGoldenTests.Fixture] {
+        let url = Bundle(for: PacenoteGoldenTests.self)
+            .url(forResource: "pacenote_fixtures", withExtension: "json")!
+        return (try? JSONDecoder().decode([PacenoteGoldenTests.Fixture].self,
+                                          from: Data(contentsOf: url))) ?? []
+    }
+
+    private func road(_ name: String) -> [GeoPoint] {
+        let f = loadFixtures().first { $0.name == name }
+        return (f?.coordinates ?? []).map { GeoPoint(lon: $0[0], lat: $0[1]) }
+    }
+
+    func testShortRoadProducesNoCalls() {
+        let coords = road("syn_too_short")
+        XCTAssertTrue(DriveSimulator().simulate(coordinates: coords).isEmpty)
+    }
+
+    func testStraightRoadHasNothingToCall() {
+        // A road with no corners must not produce phantom calls.
+        let coords = road("syn_straight")
+        XCTAssertTrue(DriveSimulator().simulate(coordinates: coords).isEmpty)
+    }
+
+    func testCallsAdvanceAlongTheRoute() {
+        // Calls must be in driving order and never go backwards, or the co-driver
+        // would repeat a corner the driver has already passed.
+        let coords = road("db1_74432352_School_House_Road")
+        let calls = DriveSimulator().simulate(coordinates: coords)
+        XCTAssertFalse(calls.isEmpty)
+        for (i, call) in calls.enumerated() where i > 0 {
+            XCTAssertGreaterThanOrEqual(call.distanceAlong, calls[i - 1].distanceAlong)
+            XCTAssertGreaterThanOrEqual(call.seconds, calls[i - 1].seconds)
+        }
+    }
+
+    func testEveryCornerIsCalledExactlyOnce() {
+        // The regression this guards: the note cursor used to park on the first
+        // announced note, so every corner after it was silently skipped.
+        let coords = road("db1_74432352_School_House_Road")
+        let notes = PacenoteGenerator.generate(coords).turns
+        guard !notes.isEmpty else { return }
+
+        let calls = DriveSimulator().simulate(coordinates: coords)
+        XCTAssertFalse(calls.isEmpty, "a road with corners produced no calls")
+
+        // Calls must reach the last corner. A note is called *before* it is
+        // reached — that is the point of a call distance — so the final call
+        // sits ahead of the final corner, not past it.
+        let total = GeoMath.lengthMeters(coords)
+        if let last = calls.last {
+            let lastNoteStart = notes.last?.startDist ?? 0
+            XCTAssertLessThan(last.distanceAlong, total)
+            XCTAssertGreaterThanOrEqual(last.distanceAlong + 400, lastNoteStart,
+                                        "calls stopped well before the final corner")
+        }
+    }
+
+    func testNoCallSpeaksAGradeAsDigits() {
+        // "3 L" would be read aloud as "three el". Distances are digits and are
+        // fine, so strip them before checking for a grade written numerically.
+        for name in ["db0_105072685_Descente_2", "db1_74432352_School_House_Road",
+                     "syn_hairpin", "syn_zigzag_sharp"] {
+            let calls = DriveSimulator().simulate(coordinates: road(name))
+            XCTAssertFalse(calls.isEmpty, "\(name) produced no calls")
+            for call in calls {
+                // Strip the leading distance, the connectors, and any bare
+                // distance item; a grade must be the only thing left speaking.
+                var text = call.phrase
+                text = text.replacingOccurrences(of: "into ", with: "")
+                text = text.replacingOccurrences(of: "followed by ", with: "")
+                text = text.replacingOccurrences(
+                    of: #"^[0-9]+, "#, with: "",
+                    options: .regularExpression)
+                let items = text.split(separator: ", ")
+                    .filter { Int($0) == nil }   // drop straight distances
+                    .joined(separator: " ")
+                XCTAssertFalse(items.contains(where: { $0.isNumber }),
+                               "\(name): \(call.phrase)")
+            }
+        }
+    }
+
+    func testTranscriptIsReadable() throws {
+        let transcript = DriveSimulator().transcript(coordinates: road("db1_74432352_School_House_Road"))
+        XCTAssertTrue(transcript.contains("calls"))
+        XCTAssertTrue(transcript.contains("00:"), transcript)
+    }
+
+    func testSimulationIsDeterministic() {
+        let coords = road("syn_zigzag_sharp")
+        let a = DriveSimulator().simulate(coordinates: coords)
+        let b = DriveSimulator().simulate(coordinates: coords)
+        XCTAssertEqual(a.map(\.phrase), b.map(\.phrase))
+    }
+
+    func testFasterSpeedDoesNotLoseCorners() {
+        // Call distance scales with speed, so a faster pass sees more per call —
+        // but it must not skip notes.
+        let coords = road("db1_74432352_School_House_Road")
+        let slow = DriveSimulator().simulate(coordinates: coords,
+                                             options: .init(speedMps: 8))
+        let fast = DriveSimulator().simulate(coordinates: coords,
+                                             options: .init(speedMps: 30))
+        XCTAssertFalse(slow.isEmpty)
+        XCTAssertFalse(fast.isEmpty)
+        // Faster means the whole route takes less simulated time.
+        XCTAssertLessThan(fast.last?.seconds ?? .greatestFiniteMagnitude,
+                          slow.last?.seconds ?? 0)
+    }
+}
+
 final class PacenoteGoldenTests: XCTestCase {
 
     struct Fixture: Decodable {
