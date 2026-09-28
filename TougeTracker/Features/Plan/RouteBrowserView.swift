@@ -50,6 +50,12 @@ struct RouteBrowserView: View {
                 }
                 .overlay(alignment: .bottom) {
                     VStack(spacing: 10) {
+                        // Recenter sits above the card so an appearing card
+                        // pushes the arrow up instead of burying it.
+                        HStack {
+                            Spacer()
+                            recenterButton
+                        }
                         if let road = selectedRoad {
                             RoadPreviewCard(
                                 road: road,
@@ -61,11 +67,6 @@ struct RouteBrowserView: View {
                                 onDismiss: { selectedRoad = nil }
                             )
                             .transition(.move(edge: .bottom).combined(with: .opacity))
-                        }
-                        // Recenter lives under the card so the two never overlap.
-                        HStack {
-                            Spacer()
-                            recenterButton
                         }
                     }
                 }
