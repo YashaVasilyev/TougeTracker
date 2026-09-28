@@ -138,6 +138,9 @@ public final class PacenoteNavigator {
         var items = [PacenoteCall.Item(note: note, remaining: max(remaining, 0), connector: nil)]
         var look = nextNoteIndex + 1
         var prevEnd = note.endDist
+        // Tracks the previously chained note so a corner following a straight can
+        // drop its connector.
+        var prev = note
         let horizon = callDistance(speed: speed)
 
         while look < pacenotes.count, items.count < maxItemsPerCall {
@@ -149,12 +152,21 @@ public final class PacenoteNavigator {
             let isImminent = nextRemaining <= horizon
             if gap >= 0, gap < 50, isImminent,
                !announcedIndexes.contains(look) {
-                let connector = gap < 20 ? "into" : "followed by"
+                // A straight states its own distance, so the corner after it
+                // needs no connector. Otherwise the corners are effectively one
+                // movement and read as "into".
+                let connector: String?
+                if prev.isStraight {
+                    connector = nil
+                } else {
+                    connector = gap < 20 ? "into" : "followed by"
+                }
                 items.append(PacenoteCall.Item(note: next,
                                                 remaining: max(nextRemaining, 0),
                                                 connector: connector))
                 announcedIndexes.insert(look)
                 prevEnd = next.endDist
+                prev = next
                 look += 1
             } else {
                 break

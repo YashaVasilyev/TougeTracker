@@ -36,7 +36,11 @@ struct DriveSetupView: View {
                 }
             }
             .navigationTitle("Drive")
-            .sheet(isPresented: $showBrowser) { RouteBrowserView() }
+            // The browser hides its navigation bar, so it needs its own way
+            // back to here; without it this sheet is a dead end.
+            .sheet(isPresented: $showBrowser) {
+                RouteBrowserView { showBrowser = false }
+            }
         }
     }
 

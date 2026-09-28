@@ -85,12 +85,17 @@ public enum PacenoteGenerator {
     /// Renders one note as text. Shared by `formatted(_:format:)` and the
     /// generator so the preview card and the pacenote list can never disagree.
     ///
-    /// A straight has no direction, so it renders as a bare grade ("S" / "Straight")
-    /// rather than "S L".
+    /// A straight has no direction and no severity — it is *only* a distance.
+    /// Writing "S 150m" adds a word that says nothing: the number is the whole
+    /// note, and it is what the co-driver calls out loud too.
     static func describe(grade: String, dir: PacenoteDirection?, format: PacenoteFormat,
-                         isLong: Bool, isVeryLong: Bool, isHairpin: Bool) -> String {
+                         isLong: Bool, isVeryLong: Bool, isHairpin: Bool,
+                         straightLengthMeters: Double? = nil) -> String {
         let gradeStr = format == .descriptive ? (descriptiveMap[grade] ?? grade) : grade
-        guard let dir else { return gradeStr }
+        guard let dir else {
+            guard let straightLengthMeters else { return gradeStr }
+            return "\(roundedMeters(straightLengthMeters))m"
+        }
 
         let dirStr: String
         switch (dir, format) {
@@ -106,9 +111,66 @@ public enum PacenoteGenerator {
         return "\(gradeStr) \(dirStr)\(suffix)"
     }
 
+    /// Distances are called to the nearest 10m; finer precision is noise.
+    public static func roundedMeters(_ meters: Double) -> Int {
+        max(10, Int((meters / 10).rounded(.down) * 10))
+    }
+
+    /// Distance between two notes' apexes.
+    ///
+    /// Apex-to-apex is the honest measure of how far apart two corners are. The
+    /// gap between one turn's *end* and the next turn's *start* understates it,
+    /// badly so for long turns: two 60m corners butted together have a 10m
+    /// end-gap while their apexes are 60m apart, and reading that as one
+    /// continuous movement is wrong.
+    public static func apexGap(from a: Pacenote, to b: Pacenote) -> Double {
+        (b.startDist + b.length / 2) - (a.startDist + a.length / 2)
+    }
+
+    /// The connector for a pair of notes, from their apex distance.
+    ///
+    /// Under 20m the two corners are one movement; from 20m to 50m the short
+    /// run is called out; beyond that the straight gets its own distance note
+    /// and the corner needs no connector.
+    public static func connector(from a: Pacenote, to b: Pacenote) -> String? {
+        let gap = apexGap(from: a, to: b)
+        if gap < 20 { return "into" }
+        if gap <= 50 { return "followed by" }
+        return nil
+    }
+
+    /// Renders a run of notes as lines, with the connector between each pair.
+    ///
+    /// The written `text` from `generate` already carries connectors, but the
+    /// list views render each note on its own — and a bare list of corners gave
+    /// no clue how they related. This applies the same apex-based rule so a
+    /// list reads "5 L long / into 5 R long / 80m" rather than three
+    /// disconnected corners.
+    public static func renderedList(_ notes: [Pacenote],
+                                     format: PacenoteFormat = .rally) -> [String] {
+        var out: [String] = []
+        for (i, note) in notes.enumerated() {
+            let text = formatted(note, format: format)
+            guard i > 0 else { out.append(text); continue }
+            // A straight states its own distance, so nothing is inserted after
+            // one; the gap is already spoken for.
+            let previous = notes[i - 1]
+            // A straight is a distance, not a movement: nothing is inserted
+            // before one, and nothing after one either.
+            if !previous.isStraight, !note.isStraight,
+               let connector = connector(from: previous, to: note) {
+                out.append("\(connector) \(text)")
+            } else {
+                out.append(text)
+            }
+        }
+        return out
+    }
+
     public static func formatted(_ note: Pacenote, format: PacenoteFormat = .rally) -> String {
         describe(grade: note.grade, dir: note.direction, format: format,
-                 isLong: note.isLong, isVeryLong: note.isVeryLong, isHairpin: note.grade == "HP")
+                 isLong: note.isLong, isVeryLong: note.isVeryLong, isHairpin: note.grade == "HP",
+                 straightLengthMeters: note.isStraight ? note.length : nil)
     }
 
     public static func generate(_ coordinates: [GeoPoint], options: PacenoteOptions = PacenoteOptions()) -> PacenoteResult {
@@ -266,31 +328,40 @@ public enum PacenoteGenerator {
         var finalNotes: [String] = []
         var finalTurns: [Pacenote] = []
 
-        // Straights become their own notes so a co-driver can call "straight"
-        // and the driver knows what is coming. Only meaningful stretches are
-        // worth a call: a straight shorter than this is just the gap between
-        // two corners, and calling it would add noise.
+        // A straight is announced by its length, and only when the run is long
+        // enough for the number to mean something. Below this the gap belongs to
+        // the corner it introduces, which carries a connector instead.
         let minimumStraightMeters: Double = 50
 
         for (i, t) in turns.enumerated() {
             // The gap since the previous turn. A long one is labelled by a
             // straight note below, so the turn itself must not repeat the same
             // distance — that would read as two identical calls.
-            let gap = i > 0 ? t.startDist - turns[i - 1].endDist : t.startDist
+            // The gap between consecutive turns, measured apex to apex. Using
+            // the end-to-start distance understated it badly for long corners:
+            // two 60m turns butted together showed a 10m gap and were read as
+            // one continuous movement when their apexes were 60m apart.
+            let gap: Double = {
+                guard i > 0 else { return t.startDist }
+                let previous = turns[i - 1]
+                let previousApex = previous.startDist + previous.length / 2
+                return (t.startDist + t.length / 2) - previousApex
+            }()
             let isLabelledStraight = i > 0 && gap >= minimumStraightMeters
 
+            // How the gap since the previous turn is announced:
+            //   under 20m  → the corner reads "into" (one movement)
+            //   20-50m    → the corner reads "followed by"
+            //   over 50m  → the straight gets its own distance note, and the
+            //                corner needs no connector
             var prefix = ""
             if isLabelledStraight {
-                // The straight note above already carried the distance.
-                prefix = "followed by "
+                prefix = ""
             } else if i > 0 {
                 if gap < 20 {
                     prefix = "into "
-                } else if gap < 50 {
-                    prefix = "followed by "
                 } else {
-                    let distToNext = GeoMath.jsRound(gap / 10) * 10
-                    if distToNext > 10 { prefix = "\(Int(distToNext))m: " }
+                    prefix = "followed by "
                 }
             } else {
                 let distToNext = GeoMath.jsRound(gap / 10) * 10
@@ -304,9 +375,12 @@ public enum PacenoteGenerator {
             if isLabelledStraight {
                 let start = turns[i - 1].endDist
                 let straightLength = gap
+                // The note carries its own length, so no distance prefix: the
+                // prefix is only for notes that are not self-describing.
                 let straightText = describe(grade: "S", dir: nil, format: format,
-                                            isLong: false, isVeryLong: false, isHairpin: false)
-                finalNotes.append("\(Int(GeoMath.jsRound(straightLength / 10) * 10))m: \(straightText)")
+                                            isLong: false, isVeryLong: false, isHairpin: false,
+                                            straightLengthMeters: straightLength)
+                finalNotes.append(straightText)
                 // A straight has no apex of its own; anchor it at its midpoint
                 // so the map marker and the co-driver timing land on the road.
                 let midIndex = Int(GeoMath.jsRound((start + straightLength / 2) / stepSize))

@@ -8,6 +8,11 @@ struct RouteBrowserView: View {
     @Environment(DriveEngine.self) private var engine: DriveEngine
     @Environment(TabRouter.self) private var router: TabRouter
 
+    /// Shown as a leading "Done" control. Set when this view is presented modally
+    /// (the Drive tab's "Browse roads…" sheet), where the navigation bar is
+    /// hidden and there would otherwise be no way back.
+    var onDismiss: (() -> Void)? = nil
+
     @State private var locationReader = LocationReader()
 
     @State private var position: MapCameraPosition = .region(MKCoordinateRegion(
@@ -74,8 +79,14 @@ struct RouteBrowserView: View {
                     guard let coordinate = proxy.convert(screenPoint, from: .local) else { return }
                     if isSegmentMode {
                         handleSegmentTap(at: coordinate)
+                    } else if let hit = nearestRoad(to: coordinate, in: visibleRoads) {
+                        selectedRoad = hit
+                    } else if let saved = nearestSavedRoute(to: coordinate) {
+                        // A saved route is not in the tile data, so it is only
+                        // reachable by hit-testing the store's own geometry.
+                        selectedRoad = saved.asRoad
                     } else {
-                        selectedRoad = nearestRoad(to: coordinate, in: visibleRoads)
+                        selectedRoad = nil
                     }
                 }
                 .overlay(alignment: .top) {
@@ -157,8 +168,32 @@ struct RouteBrowserView: View {
     }
 
     private func roadOverlay(for road: TougeRoad) -> some MapContent {
-        MapPolyline(coordinates: road.geoPoints.map(\.clLocation))
+        MapPolyline(coordinates: displayPoints(for: road).map(\.clLocation))
             .stroke(ScoreStyle.color(for: road.totalScore ?? 0), lineWidth: lineWidth(for: road))
+    }
+
+    /// The geometry actually handed to MapKit for this road.
+    ///
+    /// Thinned when zoomed out: at a wide span a full-detail polyline is far
+    /// more vertices than the pixels it occupies, and every one of them costs
+    /// tessellation time. At street zoom this returns the road untouched.
+    private func displayPoints(for road: TougeRoad) -> [GeoPoint] {
+        let points = road.geoPoints
+        let span = currentSpanDegrees
+        let budget = RenderBudget.maxPoints(spanDegrees: span)
+        guard budget < points.count else { return points }
+
+        // Convert the view width to metres-per-degree so the spacing tolerance
+        // tracks how much screen space a vertex really covers.
+        let metersPerDegree = 111_320.0
+        let tolerance = max(span * metersPerDegree / 600, 1)
+        return PolylineSimplifier.thin(points, maxPoints: budget,
+                                       minSpacingMeters: tolerance)
+    }
+
+    /// Longest edge of the current view, in degrees.
+    private var currentSpanDegrees: Double {
+        max(visibleRegion.span.latitudeDelta, visibleRegion.span.longitudeDelta)
     }
 
     private func lineWidth(for road: TougeRoad) -> CGFloat {
@@ -245,9 +280,18 @@ struct RouteBrowserView: View {
     private var topOverlay: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
-                Text("Plan")
-                    .font(.largeTitle.bold())
-                    .shadow(color: .black.opacity(0.12), radius: 3, y: 1)
+                // Only when presented modally: on the Plan tab there is no
+                // title to displace, and the tab bar already provides a way out.
+                if let onDismiss {
+                    Button("Done", action: onDismiss)
+                        .font(.subheadline.weight(.semibold))
+                        .buttonStyle(.borderedProminent)
+                        .buttonBorderShape(.capsule)
+                } else {
+                    Text("Plan")
+                        .font(.largeTitle.bold())
+                        .shadow(color: .black.opacity(0.12), radius: 3, y: 1)
+                }
 
                 Spacer(minLength: 12)
 
@@ -434,6 +478,16 @@ struct RouteBrowserView: View {
     /// gives the real visible rect on every camera update.
     private func loadVisibleRoads() {
         tileLoadTask?.cancel()
+
+        // Zoomed out past the point where any road is legible, load nothing.
+        // Decoding dozens of tiles to then draw none of them was most of the
+        // cost, and it happened on every camera settle.
+        guard currentSpanDegrees <= RenderBudget.detailSpanDegrees * 2 else {
+            visibleRoads = []
+            isLoading = false
+            return
+        }
+
         tileLoadTask = Task {
             try? await Task.sleep(nanoseconds: 300_000_000)
             await MainActor.run { isLoading = true }
@@ -463,12 +517,16 @@ struct RouteBrowserView: View {
         let minLon = region.center.longitude - region.span.longitudeDelta / 2
         let maxLon = region.center.longitude + region.span.longitudeDelta / 2
 
-        return roads
-            .filter { road in
-                guard let la = road.centerLat, let lo = road.centerLon else { return false }
-                return la >= minLat && la <= maxLat && lo >= minLon && lo <= maxLon
-            }
-            .sorted { ($0.totalScore ?? 0) < ($1.totalScore ?? 0) }
+        let visible = roads.filter { road in
+            guard let la = road.centerLat, let lo = road.centerLon else { return false }
+            return la >= minLat && la <= maxLat && lo >= minLon && lo <= maxLon
+        }
+
+        // Zoomed out the view spans many tiles, and the uncapped list is what
+        // MapKit chokes on. `RenderBudget` keeps the best roads; the sort below
+        // then restores the draw order (best last) that the map relies on.
+        let budgeted = RenderBudget.roads(visible, spanDegrees: currentSpanDegrees)
+        return budgeted.sorted { ($0.totalScore ?? 0) < ($1.totalScore ?? 0) }
     }
 
     // MARK: - Location
@@ -570,6 +628,23 @@ struct RouteBrowserView: View {
             }
         }
         return nearest?.road
+    }
+
+    /// Finds a saved route whose stored geometry passes close to a tap.
+    ///
+    /// Uses the same zoom-scaled tolerance as road selection so a saved route is
+    /// as grabbable as a road, and so it is not stolen by a parallel tile road
+    /// that merely sits nearer the finger.
+    private func nearestSavedRoute(to point: CLLocationCoordinate2D) -> SavedRoute? {
+        let tolerance = snapToleranceMeters()
+        let candidates = store.routes().filter { $0.coordinates.count >= 2 }
+
+        let hits = candidates.compactMap { route -> (SavedRoute, CLLocationDistance)? in
+            guard let hit = RoadSegmentBuilder.snap(point, in: [route.asRoad],
+                                                   toleranceMeters: tolerance) else { return nil }
+            return (route, hit.perpendicularDistance)
+        }
+        return hits.min { $0.1 < $1.1 }?.0
     }
 
     // MARK: - Segment mode

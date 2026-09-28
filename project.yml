@@ -37,6 +37,10 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.tougetracker.app
         TARGETED_DEVICE_FAMILY: "1"
         CODE_SIGN_STYLE: Automatic
+        # Personal Team: a free Apple ID is enough to run on your own device, no
+        # paid membership required. Xcode regenerates the profile and the app
+        # expires after ~7 days, so it needs reinstalling weekly.
+        DEVELOPMENT_TEAM: 8M9TF7G7G5
         MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: "1"
   TougeTrackerTests:

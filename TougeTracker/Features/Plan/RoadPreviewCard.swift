@@ -31,15 +31,18 @@ struct RoadPreviewCard: View {
         self.pacenotes = PacenoteGenerator.generate(road.geoPoints).turns
     }
 
-    private var previewNotes: [Pacenote] {
-        Array(pacenotes.prefix(4))
+    /// The first few notes, rendered with the connector that joins each to the
+    /// one before it. Without it the chips read as disconnected grades.
+    private var previewLines: [String] {
+        let head = Array(pacenotes.prefix(4))
+        return PacenoteGenerator.renderedList(head, format: settings.pacenoteFormat)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
             stats
-            if !previewNotes.isEmpty {
+            if !previewLines.isEmpty {
                 notesPreview
             }
             actions
@@ -133,8 +136,8 @@ struct RoadPreviewCard: View {
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
-                    ForEach(Array(previewNotes.enumerated()), id: \.offset) { _, note in
-                        Text(note.text)
+                    ForEach(Array(previewLines.enumerated()), id: \.offset) { _, line in
+                        Text(line)
                             .font(.caption)
                             .padding(.horizontal, 8).padding(.vertical, 4)
                             .background(Color.primary.opacity(0.07),

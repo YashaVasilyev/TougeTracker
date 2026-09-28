@@ -150,6 +150,34 @@ public final class DriveEngine: NSObject, CLLocationManagerDelegate {
         return drive
     }
 
+    /// Leaves the finished-drive summary and returns the Drive tab to its
+    /// starting state.
+    ///
+    /// The drive has already been persisted by `stop()`, so this only clears the
+    /// on-screen summary. `navigator` is dropped as well: leaving it in place
+    /// would let a subsequent drive inherit the previous route's notes if a new
+    /// route were never supplied.
+    public func dismissLastDrive() {
+        guard state == .finished else { return }
+        state = .idle
+        lastDrive = nil
+        navigator = nil
+        routeCoordinates = []
+        pacenoteAnnotations = []
+        drivenPath = []
+        currentNote = nil
+        nextNotes = []
+        progress = 0
+        offRoute = false
+        forwardG = 0
+        lateralG = 0
+        currentSpeedMps = 0
+        elapsed = 0
+        currentDistance = 0
+        currentRouteID = nil
+        currentRouteName = nil
+    }
+
     private func requestAuthorizationIfNeeded() {
         let status = locationMgr.authorizationStatus
         locationAuthorized = (status == .authorizedWhenInUse || status == .authorizedAlways)

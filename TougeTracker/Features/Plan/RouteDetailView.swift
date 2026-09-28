@@ -12,6 +12,13 @@ struct RouteDetailView: View {
 
     @State private var pacenotes: [Pacenote] = []
 
+    /// Notes rendered with the connector between each pair, measured apex to
+    /// apex. Rendering each note on its own showed a bare column of grades with
+    /// no indication of how the corners related.
+    private var lines: [String] {
+        PacenoteGenerator.renderedList(pacenotes, format: settings.pacenoteFormat)
+    }
+
     init(road: TougeRoad) {
         self.road = road
         let preview = PacenoteGenerator.generate(road.geoPoints)
@@ -50,12 +57,12 @@ struct RouteDetailView: View {
                                 .font(.system(.footnote, design: .monospaced)).textSelection(.enabled)
                         } else {
                             VStack(alignment: .leading, spacing: 4) {
-                                ForEach(Array(pacenotes.enumerated()), id: \.offset) { idx, note in
+                                ForEach(Array(lines.enumerated()), id: \.offset) { idx, line in
                                     HStack(alignment: .top) {
                                         Text("\(idx + 1)")
                                             .font(.caption).frame(width: 22, alignment: .leading)
                                             .foregroundStyle(.secondary)
-                                        Text(PacenoteGenerator.formatted(note, format: settings.pacenoteFormat))
+                                        Text(line)
                                             .font(.system(.body, design: .monospaced))
                                     }
                                 }

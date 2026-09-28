@@ -108,6 +108,27 @@ public final class SavedRoute: Identifiable {
     public var pacenotes: [Pacenote] {
         (try? JSONDecoder().decode([Pacenote].self, from: pacenotesData)) ?? []
     }
+
+    /// Rebuilds the `TougeRoad` this route was saved from.
+    ///
+    /// Tapping a saved route on the map has to open the same preview card that
+    /// a freshly-tapped road does, and that card takes a `TougeRoad`. Scores
+    /// are not stored (the preview shows "0 score" for an unscored road, which is
+    /// accurate for a custom route), so they are left nil rather than faked.
+    public var asRoad: TougeRoad {
+        TougeRoad(
+            id: id,
+            name: name,
+            type: type.isEmpty ? nil : type,
+            coordinates: coordinates.map { [$0.lon, $0.lat] },
+            lengthMiles: lengthMeters / 1609.344,
+            curvatureScore: curvatureScore > 0 ? curvatureScore : nil,
+            flowScore: nil,
+            totalScore: totalScore > 0 ? totalScore : nil,
+            centerLat: centerLat,
+            centerLon: centerLon
+        )
+    }
 }
 
 @Model

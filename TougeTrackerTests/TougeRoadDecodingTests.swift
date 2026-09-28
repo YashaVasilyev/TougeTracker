@@ -1,5 +1,6 @@
 import XCTest
 import SwiftData
+import CoreLocation
 @testable import TougeTracker
 
 /// Covers the tolerant `TougeRoad` decoding added for bundled tiles whose
@@ -198,6 +199,32 @@ final class TougeRoadDecodingTests: XCTestCase {
         XCTAssertEqual(store.routes().count, 2)
         XCTAssertTrue(store.isSaved(id: a.id), "the first custom segment vanished")
         XCTAssertTrue(store.isSaved(id: b.id))
+    }
+
+    /// Tapping a saved route on the map opens the road preview card, which needs
+    /// a `TougeRoad` rebuilt from the stored row. If that loses geometry the
+    /// card opens on an empty road, and the hit-test that found it can never
+    /// work again.
+    @MainActor
+    func testSavedRouteRebuildsIntoASelectableRoad() throws {
+        let (store, _) = try makeStore(inMemory: true)
+        let original = RoadSegmentBuilder.makeRoad(points: (0...10).map {
+            GeoPoint(lon: Double($0) * 0.0004, lat: 0.0003)
+        }, name: "Tap Me")
+
+        store.saveRoute(original)
+        let saved = try XCTUnwrap(store.route(id: original.id))
+        let rebuilt = saved.asRoad
+
+        XCTAssertEqual(rebuilt.id, original.id, "id must survive so save state is known")
+        XCTAssertEqual(rebuilt.displayName, "Tap Me")
+        XCTAssertEqual(rebuilt.geoPoints.count, original.geoPoints.count)
+        // The hit-test that selects a saved route snaps onto this geometry, so
+        // it has to be a real, tappable polyline.
+        let snapped = RoadSegmentBuilder.snap(
+            CLLocationCoordinate2D(latitude: 0.0003, longitude: 0.002),
+            in: [rebuilt], toleranceMeters: 200)
+        XCTAssertNotNil(snapped, "a rebuilt route must be selectable on the map")
     }
 
     /// A custom route and a tile road must not collide: both would claim the

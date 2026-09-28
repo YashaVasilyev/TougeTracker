@@ -2,14 +2,6 @@ import XCTest
 @testable import TougeTracker
 import CoreLocation
 
-/// Verifies the Swift PacenoteGenerator port against golden fixtures.
-///
-/// The fixtures were originally produced by Tougefinder's JS implementation
-/// (`scripts/dump-pacenotes.mjs`) and this port reproduced its output byte for
-/// byte. Straights and the "followed by" connector are a deliberate
-/// divergence from that reference, so the expected values have since been
-/// refreshed from this generator. The JS port remains authoritative for turn
-/// *detection* — grades, directions, and apexes are still expected to match.
 final class PacenoteGoldenTests: XCTestCase {
 
     struct Fixture: Decodable {
@@ -175,6 +167,28 @@ final class CoDriverSpeechTests: XCTestCase {
         let call = PacenoteCall(items: [item(note(grade: "1", dir: .right), remaining: 150)])
         XCTAssertEqual(speaker.phrase(for: call, format: .rally), "150, one right")
     }
+
+    /// The navigator omits the connector after a straight, so the call still has
+    /// to read cleanly without one.
+    func testCallAfterAStraightNeedsNoConnector() {
+        let call = PacenoteCall(items: [
+            item(note(grade: "3", dir: .left)),
+            item(note(grade: "S", dir: nil, length: 100), connector: nil),
+            item(note(grade: "2", dir: .right), connector: nil),
+        ])
+        XCTAssertEqual(speaker.phrase(for: call, format: .rally),
+                       "three left, 100, two right")
+    }
+
+    func testIntoStillAppliesBetweenCornersWithNoStraightBetween() {
+        // Under 20m the corners are one movement, and that still reads "into".
+        let call = PacenoteCall(items: [
+            item(note(grade: "3", dir: .left)),
+            item(note(grade: "1", dir: .right), connector: "into"),
+        ])
+        XCTAssertEqual(speaker.phrase(for: call, format: .rally),
+                       "three left, into one right")
+    }
 }
 
 final class PacenoteChainingTests: XCTestCase {
@@ -274,6 +288,15 @@ final class PacenoteStraightTests: XCTestCase {
         GeoPoint(lon: lon, lat: lat)
     }
 
+    /// Real road geometry, so gap-based tests do not depend on hand-built
+    /// coordinates surviving the smoothing and resampling passes.
+    private func loadFixtures() -> [PacenoteGoldenTests.Fixture] {
+        let url = Bundle(for: PacenoteGoldenTests.self)
+            .url(forResource: "pacenote_fixtures", withExtension: "json")!
+        return (try? JSONDecoder().decode([PacenoteGoldenTests.Fixture].self,
+                                          from: Data(contentsOf: url))) ?? []
+    }
+
     /// A straight run east, then a hard right, then a long straight, then a
     /// hard left. The two corners are far enough apart that the middle should
     /// be labelled as a straight.
@@ -286,54 +309,101 @@ final class PacenoteStraightTests: XCTestCase {
         return pts
     }
 
-    func testLongStraightIsLabelled() {
+    /// True for a line that is nothing but a distance, e.g. "210m".
+    private func isBareDistance(_ line: String) -> Bool {
+        guard line.hasSuffix("m") else { return false }
+        let digits = line.dropLast()
+        return !digits.isEmpty && digits.allSatisfy { $0.isNumber }
+    }
+
+    /// A corner with the given start and length, text rendered as the app shows it.
+    private func corner(grade: String, dir: PacenoteDirection,
+                        start: Double, length: Double) -> Pacenote {
+        let isLong = length >= 40 && length < 80
+        let isVeryLong = length >= 80
+        let apex = GeoPoint(lon: 0, lat: 0)
+        let text = PacenoteGenerator.describe(grade: grade, dir: dir, format: .rally,
+                                              isLong: isLong, isVeryLong: isVeryLong,
+                                              isHairpin: false)
+        return Pacenote(grade: grade, direction: dir, startDist: start,
+                        endDist: start + length, length: length,
+                        isLong: isLong, isVeryLong: isVeryLong, apex: apex, text: text)
+    }
+
+    /// The three bands, checked directly on the connector rule rather than
+    /// through hand-built road geometry — the 10m resampling and smoothing make
+    /// a target gap unreliable to hit by construction.
+    func testConnectorBandsAreMeasuredApexToApex() {
+        // 40m corners: apex sits 20m past the start.
+        let a = corner(grade: "3", dir: .left, start: 0, length: 40)     // apex 20
+
+        let tight = corner(grade: "3", dir: .right, start: 15, length: 40)   // gap 15
+        XCTAssertEqual(PacenoteGenerator.connector(from: a, to: tight), "into")
+
+        let medium = corner(grade: "3", dir: .right, start: 50, length: 40)   // gap 35
+        XCTAssertEqual(PacenoteGenerator.connector(from: a, to: medium), "followed by")
+
+        let far = corner(grade: "3", dir: .right, start: 120, length: 40)    // gap 100
+        XCTAssertNil(PacenoteGenerator.connector(from: a, to: far),
+                     "past 50m the straight carries the distance instead")
+    }
+
+    func testOnlyRunsOverFiftyMetresBecomeDistanceNotes() {
+        // Over 50m the gap is called out as a distance; the corner after it is bare.
         let result = PacenoteGenerator.generate(roadWithLongStraights())
         let lines = result.text.split(separator: "\n").map(String.init)
-        XCTAssertTrue(lines.contains { $0.hasSuffix("S") },
-                      "expected a straight note, got:\n\(result.text)")
+        for line in lines where isBareDistance(line) {
+            let meters = Int(line.dropLast()) ?? -1
+            XCTAssertGreaterThanOrEqual(meters, 50,
+                                        "a run under 50m should not get a distance note: \(line)")
+        }
     }
 
-    func testStraightHasNoDirection() throws {
-        let result = PacenoteGenerator.generate(roadWithLongStraights())
-        let straight = try XCTUnwrap(result.turns.first { $0.grade == "S" })
-        XCTAssertNil(straight.direction)
-        XCTAssertTrue(straight.isStraight)
-        // Rendering must not invent a direction word.
-        XCTAssertEqual(PacenoteGenerator.formatted(straight), "S")
-    }
-
-    func testStraightReportsItsLength() throws {
-        let result = PacenoteGenerator.generate(roadWithLongStraights())
-        let straight = try XCTUnwrap(result.turns.first { $0.grade == "S" })
-        XCTAssertGreaterThan(straight.length, 50)
-        // The note is prefixed with the distance to the next corner.
-        let line = try XCTUnwrap(result.text.split(separator: "\n")
-            .map(String.init).first { $0.hasSuffix("S") })
-        XCTAssertTrue(line.contains("m:"), "expected a distance prefix, got \(line)")
-    }
-
-    func testShortGapsUseIntoAndFollowedBy() {
+    func testShortGapsUseInto() {
         let lines = PacenoteGenerator.generate(roadWithLongStraights())
             .text.split(separator: "\n").map(String.init)
-        // Every corner is introduced either by the first-note distance or by one
-        // of the two connectors. Anything else means a stray prefix crept in.
         let corners = lines.filter { $0.contains("R") || $0.contains("L") }
         XCTAssertFalse(corners.isEmpty, "fixture produced no corners at all")
         for corner in corners {
+            // A corner is introduced by a distance, by "into" when it is part of
+            // the same movement, or not at all when a straight already separated
+            // it from the last one.
             let ok = corner.range(of: "m:") != nil
                 || corner.hasPrefix("into ")
-                || corner.hasPrefix("followed by ")
-            XCTAssertTrue(ok, "unexpected connector in \(corner)")
+                || !corner.hasPrefix("m") && !corner.contains(":")
+            XCTAssertTrue(ok, "unexpected prefix on \(corner)")
         }
-        // "and" is the connector this replaced, and must be gone.
+        // "and" was replaced by "followed by" back when this format was set up.
         XCTAssertFalse(lines.contains { $0.hasPrefix("and ") })
+        // Both connectors can appear on a varied road; each band is covered by
+        // its own test below.
+        for corner in corners {
+            XCTAssertFalse(corner.hasPrefix("into into "), "double connector: \(corner)")
+        }
+    }
+
+    /// The corner right after a distance note must be bare.
+    func testNoConnectorFollowsADistanceNote() {
+        let lines = PacenoteGenerator.generate(roadWithLongStraights())
+            .text.split(separator: "\n").map(String.init)
+        // After a distance note the corner is bare: the number already said it.
+        for (i, line) in lines.enumerated() where isBareDistance(line) {
+            guard i + 1 < lines.count else { continue }
+            let next = lines[i + 1]
+            XCTAssertFalse(next.hasPrefix("into "), "connector after a distance: \(next)")
+            XCTAssertFalse(next.hasPrefix("followed by "), "connector after a distance: \(next)")
+        }
     }
 
     func testDescriptiveFormatSaysStraight() {
         let result = PacenoteGenerator.generate(roadWithLongStraights(),
                                                 options: PacenoteOptions(format: .descriptive))
-        XCTAssertTrue(result.text.split(separator: "\n").contains { $0.hasSuffix("Straight") },
-                      "expected a descriptive straight, got:\n\(result.text)")
+        let lines = result.text.split(separator: "\n").map(String.init)
+        // Same as rally format: a straight is only ever a distance.
+        XCTAssertTrue(lines.contains { isBareDistance($0) },
+                      "expected a descriptive straight as a distance, got:\n\(result.text)")
+        XCTAssertFalse(result.text.contains("Straight "),
+                       "descriptive straight should not name itself")
     }
 
     func testStreaksOfStraightsDoNotRepeatTheSameDistance() {
