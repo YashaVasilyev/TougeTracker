@@ -35,11 +35,12 @@ The `.xcodeproj` is not in the repository, so generate it first:
 xcodegen generate
 ```
 
-The road data tiles are also not committed (see *Data provenance*). They require
-a sibling `../Tougefinder` checkout with its dependencies installed:
+The road data tiles are also not committed (see *Data provenance*). They are
+downloaded from roadcurvature.com and converted locally:
 
 ```sh
-node scripts/split-db-into-tiles.mjs
+node scripts/fetch-curvature-tiles.mjs           # all US states, both bands
+node scripts/fetch-curvature-tiles.mjs vermont  # one state, for iteration
 ```
 
 Without the tiles the app builds but shows no roads on the map, and
@@ -81,7 +82,7 @@ TougeTrackerTests/
   Fixtures/    Golden pacenote fixtures shared with the JS reference
 scripts/
   deploy.sh                Build + install + launch
-  split-db-into-tiles.mjs  Generate bundled road tiles
+  fetch-curvature-tiles.mjs  Download roadcurvature.com KML and generate bundled road tiles
   dump-pacenotes.mjs       Reference JS pacenote implementation
   goldencheck/             Cross-check Swift output against the JS
 ```
@@ -95,16 +96,24 @@ scripts/
   `scripts/dump-pacenotes.mjs` to regenerate the fixtures after changing the
   algorithm.
 - **Road data is not committed.** The 0.25°-grid tiles under `Resources/tiles`
-  are generated locally by `scripts/split-db-into-tiles.mjs` from a sibling
-  `../Tougefinder` checkout. Regenerate them before building or running tests:
+  are generated locally by `scripts/fetch-curvature-tiles.mjs`, which downloads
+  the roadcurvature.com KMZ files and converts them. Regenerate them before
+  building or running tests:
 
   ```sh
-  node scripts/split-db-into-tiles.mjs
+  node scripts/fetch-curvature-tiles.mjs
   ```
-- **String road IDs.** The source database uses Overpass `way` IDs, which are
-  usually numeric but occasionally strings like `way-nh-16-pinkham-north`.
-  Decoding those as `Int64` aborts an entire tile, so `TougeRoad` folds strings
-  into a stable FNV-1a `Int64` that survives across launches.
+
+  Downloads are cached in `.curvature-cache/` at the repo root. Pass one or
+  more state slugs to build a small subset while iterating.
+- **Scores are curvature-only.** roadcurvature publishes no traffic/flow data,
+  so `flowScore` is always null and `totalScore` is derived logarithmically
+  from the raw curvature value (degrees per mile). The conversion is in
+  `scoreFor` in the fetch script.
+- **Road IDs are hashed.** roadcurvature exposes no stable numeric ID, so
+  `TougeRoad.id` is an FNV-1a hash of the road's name and start coordinate.
+  `TougeRoad` still folds string IDs into a hash on decode, since the bundled
+  tiles carry the value as a plain integer.
 - **Touge files are read-only.** The app reads the bundled tiles directly rather
   than copying them into a writable location, so app updates replace them
   atomically.
@@ -112,9 +121,11 @@ scripts/
 ## Data provenance
 
 The road tiles under `TougeTracker/Resources/tiles` are **not** committed to
-this repository. They are generated locally from `touges_db.json` in the
-sibling Tougefinder project, which derives road geometry from OpenStreetMap
-(© OpenStreetMap contributors, ODbL).
+this repository. They are generated locally by `scripts/fetch-curvature-tiles.mjs`
+from the color-coded KML/KMZ files published by
+[roadcurvature.com](https://kml.roadcurvature.com/), which analyses OpenStreetMap
+highway geometry to detect curves and rank each segment. The underlying geometry
+is © OpenStreetMap contributors and licensed ODbL.
 
 ## License
 

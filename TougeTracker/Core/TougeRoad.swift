@@ -2,7 +2,8 @@ import Foundation
 import CoreLocation
 
 /// A single road segment with precomputed touge scores.
-/// Data is loaded from bundled tile files (generated from touges_db.json).
+/// Data is loaded from bundled tile files (generated from roadcurvature.com
+/// KML data by `scripts/fetch-curvature-tiles.mjs`).
 public struct TougeRoad: Codable, Identifiable, Hashable, Sendable {
     public let id: Int64
     public let name: String?
@@ -25,12 +26,11 @@ public struct TougeRoad: Codable, Identifiable, Hashable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
 
-        // The bundled tiles were generated from a database where `id` is an
-        // Overpass `way` id. Most are numeric, but a small number of named
-        // roads carry string ids like "way-nh-16-pinkham-north". Decoding
-        // those as Int64 throws and aborts the *entire* tile — and with it
-        // every other road in the visible region — so accept both forms and
-        // fold strings into a stable Int64.
+        // The current tiles are generated from roadcurvature.com, whose road
+        // IDs are FNV-1a hashes emitted as integers, so the numeric path is the
+        // normal one. The string branch is kept because decoding a string as
+        // Int64 throws and would abort the *entire* tile — and with it every
+        // other road in the visible region — so accept both forms regardless.
         if let numeric = try? c.decode(Int64.self, forKey: .id) {
             self.id = numeric
         } else if let text = try? c.decode(String.self, forKey: .id) {

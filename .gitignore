@@ -35,3 +35,7 @@ TougeTracker/Resources/tiles/
 Packages/
 Package.resolved
 .swiftpm/
+
+# Downloaded roadcurvature.com KMZ sources (regenerate with
+# scripts/fetch-curvature-tiles.mjs)
+.curvature-cache/
