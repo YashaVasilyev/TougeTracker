@@ -89,6 +89,47 @@ final class DriveSimulatorTests: XCTestCase {
         }
     }
 
+    func testAStraightIsNeverCalledOnItsOwn() {
+        // A bare "120" with no context tells the driver nothing. A straight must
+        // be announced as part of the call for the turn it follows.
+        for name in ["db0_105072685_Descente_2", "db1_74432352_School_House_Road",
+                     "syn_hairpin", "syn_zigzag_sharp", "synesses"] {
+            let calls = DriveSimulator().simulate(coordinates: road(name))
+            for call in calls {
+                let parts = call.phrase.split(separator: ", ").map {
+                    $0.trimmingCharacters(in: .whitespaces)
+                }
+                XCTAssertFalse(parts.count == 1 && Int(parts[0]) != nil,
+                               "\(name): a straight was called on its own — \(call.phrase)")
+            }
+        }
+    }
+
+    func testAStraightIsAlwaysTheLastThingInACall() {
+        // "five right long, 120" announces the corner and the run that follows.
+        // The corner at the far end of that run must not be pulled into the same
+        // call — it gets its own, at its own proper distance.
+        var sawStraight = false
+        for name in ["db0_105072685_Descente_2", "db1_74432352_School_House_Road",
+                     "syn_hairpin", "syn_zigzag_sharp"] {
+            for call in DriveSimulator().simulate(coordinates: road(name)) {
+                let parts = call.phrase.split(separator: ", ")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                guard parts.count > 1 else { continue }
+                // Index 0 is the leading distance when it is numeric and
+                // something else follows it — the call-distance prefix, not a
+                // straight.
+                let first = Int(parts[0]) != nil ? 1 : 0
+                guard let straightAt = parts[first...].firstIndex(where: { Int($0) != nil })
+                else { continue }
+                sawStraight = true
+                XCTAssertEqual(straightAt, parts.count - 1,
+                               "\(name): a straight is not last in \(call.phrase)")
+            }
+        }
+        XCTAssertTrue(sawStraight, "fixture roads produced no straights to check")
+    }
+
     func testTranscriptIsReadable() throws {
         let transcript = DriveSimulator().transcript(coordinates: road("db1_74432352_School_House_Road"))
         XCTAssertTrue(transcript.contains("calls"))

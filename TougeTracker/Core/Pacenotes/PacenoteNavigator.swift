@@ -146,31 +146,49 @@ public final class PacenoteNavigator {
         while look < pacenotes.count, items.count < maxItemsPerCall {
             let next = pacenotes[look]
             let gap = next.startDist - prevEnd
-            // A chained note must also be within the call horizon, or the
-            // driver is told about a corner they are still far from.
             let nextRemaining = next.startDist - progressDistance
+
+            // A straight begins exactly where the previous note ends, so it is
+            // announced as part of that note's call even when its far end is
+            // beyond the horizon: "five right long, 1200" tells the driver the
+            // corner and then how much road follows it. Requiring the straight
+            // itself to be imminent left it stranded, and it was later called
+            // on its own — a bare number with no context, mid-corner-sequence.
+            let followsImmediately = gap >= 0 && gap < 1
             let isImminent = nextRemaining <= horizon
-            if gap >= 0, gap < 50, isImminent,
-               !announcedIndexes.contains(look) {
-                // A straight states its own distance, so the corner after it
-                // needs no connector. Otherwise the corners are effectively one
-                // movement and read as "into".
-                let connector: String?
-                if prev.isStraight {
-                    connector = nil
-                } else {
-                    connector = gap < 20 ? "into" : "followed by"
-                }
-                items.append(PacenoteCall.Item(note: next,
-                                                remaining: max(nextRemaining, 0),
-                                                connector: connector))
-                announcedIndexes.insert(look)
-                prevEnd = next.endDist
-                prev = next
-                look += 1
+
+            let include: Bool
+            if next.isStraight && followsImmediately {
+                include = true
             } else {
-                break
+                // A corner may only join if it is close enough to be useful
+                // now, and close enough behind to be part of the same movement.
+                include = gap >= 0 && gap < 50 && isImminent
             }
+            guard include, !announcedIndexes.contains(look) else { break }
+
+            // A straight states its own distance, so the corner after it needs
+            // no connector. Otherwise the corners are effectively one movement
+            // and read as "into".
+            let connector: String?
+            if prev.isStraight {
+                connector = nil
+            } else if next.isStraight {
+                connector = nil
+            } else {
+                connector = gap < 20 ? "into" : "followed by"
+            }
+            items.append(PacenoteCall.Item(note: next,
+                                            remaining: max(nextRemaining, 0),
+                                            connector: connector))
+            announcedIndexes.insert(look)
+            prevEnd = next.endDist
+            prev = next
+            look += 1
+
+            // Stop after a straight: the corner at the far end of it is not
+            // imminent, and it must be called at its own proper distance.
+            if next.isStraight { break }
         }
         return PacenoteCall(items: items)
     }
