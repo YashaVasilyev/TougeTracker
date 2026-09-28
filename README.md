@@ -117,3 +117,16 @@ sibling Tougefinder project, which derives road geometry from OpenStreetMap
 ## License
 
 No license has been assigned to this project yet.
+
+## Development notes
+
+Local setup on this machine:
+
+- Simulators available: **iPhone 17e** and **iPhone Air** (iOS 26.5). There is
+  no iPhone 16 Pro — targeting it fails with "Unable to find a device matching
+  the provided destination specifier".
+- The GitHub remote uses SSH over **port 443** (`git@github-touge`), because
+  outbound port 22 to github.com times out on this network. The alias lives in
+  `~/.ssh/config`.
+- `xcodegen generate` must be rerun after adding or removing source files, since
+  the project file is generated and untracked.
