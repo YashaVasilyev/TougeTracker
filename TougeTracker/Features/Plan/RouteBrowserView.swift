@@ -20,6 +20,10 @@ struct RouteBrowserView: View {
     @State private var detailedRoad: TougeRoad?
     @State private var isLoading = false
     @State private var searchText = ""
+    /// Whether the floating search field is expanded. Driven by the magnifying
+    /// glass button in the top-right of the custom header.
+    @State private var isSearchVisible = false
+    @FocusState private var isSearchFocused: Bool
 
     @State private var tileLoadTask: Task<Void, Never>?
     @State private var searchTask: Task<Void, Never>?
@@ -71,8 +75,9 @@ struct RouteBrowserView: View {
                     }
                 }
                 .animation(.snappy(duration: 0.25), value: selectedRoad?.id)
-                .navigationTitle("Plan")
-                .searchable(text: $searchText)
+                // The header is drawn in the top overlay so "Plan" can sit at the
+                // very top of the map with the search button beside it.
+                .toolbar(.hidden, for: .navigationBar)
                 .onChange(of: searchText) { _, _ in
                     searchLocation()
                 }
@@ -159,16 +164,87 @@ struct RouteBrowserView: View {
 
     // MARK: - Overlays
 
-    /// Loading spinner only — the score legend was removed so nothing sits
-    /// over the map while panning.
+    /// Custom map header: the "Plan" title with a search button in the top-right,
+    /// plus the search field itself when expanded. The score legend was removed
+    /// so nothing else sits over the map while panning.
     private var topOverlay: some View {
-        Group {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Plan")
+                    .font(.largeTitle.bold())
+                    .shadow(color: .black.opacity(0.12), radius: 3, y: 1)
+
+                Spacer(minLength: 12)
+
+                searchToggleButton
+            }
+
+            if isSearchVisible {
+                searchField
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+
             if isLoading {
                 loadingIndicator
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 8)
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+        .animation(.snappy(duration: 0.25), value: isSearchVisible)
+        .animation(.snappy(duration: 0.25), value: isLoading)
+    }
+
+    /// Circular magnifier that expands/collapses the search field. Mirrors the
+    /// styling of the floating recenter button so the two read as a pair.
+    private var searchToggleButton: some View {
+        Button {
+            withAnimation(.snappy(duration: 0.25)) { isSearchVisible.toggle() }
+            isSearchFocused = isSearchVisible
+        } label: {
+            Image(systemName: isSearchVisible ? "xmark" : "magnifyingglass")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 46, height: 46)
+                .background(.regularMaterial, in: Circle())
+                .overlay(Circle().strokeBorder(Color.black.opacity(0.08), lineWidth: 1))
+                .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+        }
+        .accessibilityLabel(isSearchVisible ? "Close search" : "Search")
+    }
+
+    /// Replaces the old `.searchable` bar — a floating field under the header.
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField("Search", text: $searchText)
+                .textInputAutocapitalization(.words)
+                .autocorrectionDisabled()
+                .focused($isSearchFocused)
+                .submitLabel(.search)
+            if !searchText.isEmpty {
+                Button {
+                    searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityLabel("Clear search")
+            }
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 44)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.black.opacity(0.08), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
+        .onChange(of: isSearchFocused) { _, focused in
+            // Tapping the magnifier should also raise the keyboard; dismissing
+            // the keyboard collapses the field so the header stays compact.
+            if !focused, searchText.isEmpty { isSearchVisible = false }
+        }
     }
 
     /// Floating recenter control, bottom-right. Replaces the old "Near me"
