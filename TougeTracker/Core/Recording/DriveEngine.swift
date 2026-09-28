@@ -249,6 +249,13 @@ public final class DriveEngine: NSObject, CLLocationManagerDelegate {
         let fmt = settings.pacenoteFormat
         var displayParts: [String] = []
         for (i, item) in call.items.enumerated() {
+            // A straight shows as a bare distance so the HUD reads the same way
+            // the co-driver calls it: "3 L · 100 · 2 R".
+            if item.note.isStraight {
+                let length = max(Int((item.note.length / 10).rounded(.down) * 10), 10)
+                displayParts.append("\(length) m")
+                continue
+            }
             let text = PacenoteGenerator.formatted(item.note, format: fmt)
             if i == 0 {
                 var p = text

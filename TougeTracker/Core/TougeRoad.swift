@@ -50,6 +50,24 @@ public struct TougeRoad: Codable, Identifiable, Hashable, Sendable {
         self.centerLon = try c.decodeIfPresent(Double.self, forKey: .centerLon)
     }
 
+    /// Memberwise initializer for building roads from geometry rather than from
+    /// a tile file. The decoder is the *only* other way in, and it is
+    /// unavailable to any synthesized shape like a user-drawn segment.
+    public init(id: Int64, name: String?, type: String?, coordinates: [[Double]],
+                lengthMiles: Double?, curvatureScore: Int?, flowScore: Int?,
+                totalScore: Int?, centerLat: Double?, centerLon: Double?) {
+        self.id = id
+        self.name = name
+        self.type = type
+        self.coordinates = coordinates
+        self.lengthMiles = lengthMiles
+        self.curvatureScore = curvatureScore
+        self.flowScore = flowScore
+        self.totalScore = totalScore
+        self.centerLat = centerLat
+        self.centerLon = centerLon
+    }
+
     /// FNV-1a over the UTF-8 bytes, forced into a positive Int64 so the value
     /// is stable across launches (saved routes persist this id in SwiftData).
     static func stableId(from text: String) -> Int64 {

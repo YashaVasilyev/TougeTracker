@@ -13,8 +13,10 @@ public enum PacenoteDirection: String, Codable, Sendable {
 
 public struct Pacenote: Codable, Equatable, Hashable, Sendable {
     /// "1", "3", "5", "6", "Square", or "HP" (grades 2/4 are never emitted by the algorithm).
+    /// "S" marks a straight, which has no direction.
     public var grade: String
-    public var direction: PacenoteDirection
+    /// Nil for a straight ("S"), which bends neither way.
+    public var direction: PacenoteDirection?
     public var startDist: Double
     public var endDist: Double
     public var length: Double
@@ -24,7 +26,7 @@ public struct Pacenote: Codable, Equatable, Hashable, Sendable {
     /// Baked text in rally format, e.g. "4 R long" (matches the JS generator output).
     public var text: String
 
-    public init(grade: String, direction: PacenoteDirection, startDist: Double, endDist: Double,
+    public init(grade: String, direction: PacenoteDirection?, startDist: Double, endDist: Double,
                 length: Double, isLong: Bool, isVeryLong: Bool, apex: GeoPoint, text: String) {
         self.grade = grade
         self.direction = direction
@@ -36,6 +38,9 @@ public struct Pacenote: Codable, Equatable, Hashable, Sendable {
         self.apex = apex
         self.text = text
     }
+
+    /// A straight has no direction to call.
+    public var isStraight: Bool { direction == nil }
 }
 
 public struct PacenoteResult: Equatable, Sendable {
@@ -77,20 +82,33 @@ public enum PacenoteGenerator {
         severityOrder[grade] ?? 0
     }
 
-    public static func formatted(_ note: Pacenote, format: PacenoteFormat = .rally) -> String {
-        let gradeStr = format == .descriptive ? (descriptiveMap[note.grade] ?? note.grade) : note.grade
+    /// Renders one note as text. Shared by `formatted(_:format:)` and the
+    /// generator so the preview card and the pacenote list can never disagree.
+    ///
+    /// A straight has no direction, so it renders as a bare grade ("S" / "Straight")
+    /// rather than "S L".
+    static func describe(grade: String, dir: PacenoteDirection?, format: PacenoteFormat,
+                         isLong: Bool, isVeryLong: Bool, isHairpin: Bool) -> String {
+        let gradeStr = format == .descriptive ? (descriptiveMap[grade] ?? grade) : grade
+        guard let dir else { return gradeStr }
+
         let dirStr: String
-        switch (note.direction, format) {
+        switch (dir, format) {
         case (.right, .descriptive): dirStr = "Right"
         case (.left, .descriptive): dirStr = "Left"
         case (.right, .rally): dirStr = "R"
         case (.left, .rally): dirStr = "L"
         }
         var suffix = ""
-        if note.grade != "HP" {
-            if note.isVeryLong { suffix = " very long" } else if note.isLong { suffix = " long" }
+        if !isHairpin {
+            if isVeryLong { suffix = " very long" } else if isLong { suffix = " long" }
         }
         return "\(gradeStr) \(dirStr)\(suffix)"
+    }
+
+    public static func formatted(_ note: Pacenote, format: PacenoteFormat = .rally) -> String {
+        describe(grade: note.grade, dir: note.direction, format: format,
+                 isLong: note.isLong, isVeryLong: note.isVeryLong, isHairpin: note.grade == "HP")
     }
 
     public static func generate(_ coordinates: [GeoPoint], options: PacenoteOptions = PacenoteOptions()) -> PacenoteResult {
@@ -248,49 +266,73 @@ public enum PacenoteGenerator {
         var finalNotes: [String] = []
         var finalTurns: [Pacenote] = []
 
+        // Straights become their own notes so a co-driver can call "straight"
+        // and the driver knows what is coming. Only meaningful stretches are
+        // worth a call: a straight shorter than this is just the gap between
+        // two corners, and calling it would add noise.
+        let minimumStraightMeters: Double = 50
+
         for (i, t) in turns.enumerated() {
+            // The gap since the previous turn. A long one is labelled by a
+            // straight note below, so the turn itself must not repeat the same
+            // distance — that would read as two identical calls.
+            let gap = i > 0 ? t.startDist - turns[i - 1].endDist : t.startDist
+            let isLabelledStraight = i > 0 && gap >= minimumStraightMeters
+
             var prefix = ""
-            if i > 0 {
-                let distFromPrev = t.startDist - turns[i - 1].endDist
-                if distFromPrev < 20 {
+            if isLabelledStraight {
+                // The straight note above already carried the distance.
+                prefix = "followed by "
+            } else if i > 0 {
+                if gap < 20 {
                     prefix = "into "
-                } else if distFromPrev < 50 {
-                    prefix = "and "
+                } else if gap < 50 {
+                    prefix = "followed by "
                 } else {
-                    let distToNext = GeoMath.jsRound(distFromPrev / 10) * 10
+                    let distToNext = GeoMath.jsRound(gap / 10) * 10
                     if distToNext > 10 { prefix = "\(Int(distToNext))m: " }
                 }
             } else {
-                let distToNext = GeoMath.jsRound(t.startDist / 10) * 10
+                let distToNext = GeoMath.jsRound(gap / 10) * 10
                 if distToNext > 10 { prefix = "\(Int(distToNext))m: " }
             }
 
-            let gradeStr = format == .descriptive ? (descriptiveMap[t.tightestGrade] ?? t.tightestGrade) : t.tightestGrade
-            let dirStr: String
-            switch (t.dir, format) {
-            case (.right, .descriptive): dirStr = "Right"
-            case (.left, .descriptive): dirStr = "Left"
-            case (.right, .rally): dirStr = "R"
-            case (.left, .rally): dirStr = "L"
+            // Label the stretch of road that leads into this turn, if it was
+            // long enough to be worth calling out. This is emitted *before* the
+            // turn so the notes read in the order the driver meets them:
+            // "210m: S" then "followed by Square R".
+            if isLabelledStraight {
+                let start = turns[i - 1].endDist
+                let straightLength = gap
+                let straightText = describe(grade: "S", dir: nil, format: format,
+                                            isLong: false, isVeryLong: false, isHairpin: false)
+                finalNotes.append("\(Int(GeoMath.jsRound(straightLength / 10) * 10))m: \(straightText)")
+                // A straight has no apex of its own; anchor it at its midpoint
+                // so the map marker and the co-driver timing land on the road.
+                let midIndex = Int(GeoMath.jsRound((start + straightLength / 2) / stepSize))
+                finalTurns.append(Pacenote(grade: "S", direction: nil,
+                                           startDist: start, endDist: t.startDist,
+                                           length: straightLength, isLong: false, isVeryLong: false,
+                                           apex: points[min(midIndex, points.count - 1)],
+                                           text: straightText))
             }
 
-            var suffix = ""
-            if t.tightestGrade != "HP" {
-                if t.isVeryLong { suffix += " very long" }
-                else if t.isLong { suffix += " long" }
-            }
-
-            let turnText = "\(gradeStr) \(dirStr)\(suffix)"
+            let turnText = describe(grade: t.tightestGrade, dir: t.dir, format: format,
+                                    isLong: t.isLong, isVeryLong: t.isVeryLong,
+                                    isHairpin: t.tightestGrade == "HP")
             finalNotes.append("\(prefix)\(turnText)")
 
             // Marker at the apex of the turn
             let apexDist = t.startDist + t.length / 2
             let coordIndex = Int(GeoMath.jsRound(apexDist / stepSize))
             let apex = points[min(coordIndex, points.count - 1)]
-            finalTurns.append(Pacenote(grade: t.tightestGrade, direction: t.dir,
-                                       startDist: t.startDist, endDist: t.endDist,
-                                       length: t.length, isLong: t.isLong, isVeryLong: t.isVeryLong,
-                                       apex: apex, text: turnText))
+            // Built into a local first: constructing this inline pushed the
+            // type-checker past its budget for this loop body.
+            let turnNote = Pacenote(grade: t.tightestGrade, direction: t.dir,
+                                    startDist: t.startDist, endDist: t.endDist,
+                                    length: t.length, isLong: t.isLong, isVeryLong: t.isVeryLong,
+                                    apex: apex, text: turnText)
+            finalTurns.append(turnNote)
         }
 
         let lastEndDist = turns.last?.endDist ?? 0

@@ -155,6 +155,90 @@ final class TougeRoadDecodingTests: XCTestCase {
         XCTAssertNil(store.route(id: 1), "unrelated id must not resolve")
     }
 
+    // MARK: - Two custom routes must coexist
+
+    /// The regression that motivated this: saving a custom route, then making
+    /// and saving a *second* one, left only the second in the store. Save has to
+    /// mean the route is kept, not that it is the current selection.
+    @MainActor
+    func testSavingTwoDifferentCustomRoutesKeepsBoth() throws {
+        let (store, _) = try makeStore(inMemory: true)
+
+        let first = try decode(road(idJSON: "111"))
+        let second = try decode(road(idJSON: "222"))
+        XCTAssertNotEqual(first.id, second.id)
+
+        store.saveRoute(first)
+        store.saveRoute(second)
+
+        let routes = store.routes()
+        XCTAssertEqual(routes.count, 2, "each save must persist its own route")
+        let ids = Set(routes.map(\.id))
+        XCTAssertTrue(ids.contains(first.id), "the first route was dropped")
+        XCTAssertTrue(ids.contains(second.id), "the second route is missing")
+    }
+
+    /// Two different custom routes are the common case once the user can route
+    /// any pair of taps, and both carry geometry-derived ids.
+    @MainActor
+    func testTwoCustomSegmentsFromDifferentGeometryBothPersist() throws {
+        let (store, _) = try makeStore(inMemory: true)
+
+        let a = RoadSegmentBuilder.makeRoad(points: (0...5).map {
+            GeoPoint(lon: Double($0) * 0.001, lat: 0)
+        }, name: "First")
+        let b = RoadSegmentBuilder.makeRoad(points: (0...5).map {
+            GeoPoint(lon: Double($0) * 0.001, lat: 0.01)
+        }, name: "Second")
+        XCTAssertNotEqual(a.id, b.id, "distinct geometry must yield distinct ids")
+
+        store.saveRoute(a)
+        store.saveRoute(b)
+
+        XCTAssertEqual(store.routes().count, 2)
+        XCTAssertTrue(store.isSaved(id: a.id), "the first custom segment vanished")
+        XCTAssertTrue(store.isSaved(id: b.id))
+    }
+
+    /// A custom route and a tile road must not collide: both would claim the
+    /// same slot and one would silently overwrite the other.
+    @MainActor
+    func testCustomRouteAndTileRoadCoexist() throws {
+        let (store, _) = try makeStore(inMemory: true)
+        let tile = try decode(road(idJSON: "424242"))
+        let custom = RoadSegmentBuilder.makeRoad(points: [
+            GeoPoint(lon: 0, lat: 0), GeoPoint(lon: 0.001, lat: 0)
+        ], name: "Custom")
+
+        XCTAssertNotEqual(tile.id, custom.id)
+        store.saveRoute(tile)
+        store.saveRoute(custom)
+        XCTAssertEqual(store.routes().count, 2)
+        XCTAssertTrue(store.isSaved(id: tile.id))
+        XCTAssertTrue(store.isSaved(id: custom.id))
+    }
+
+    /// The map draws saved routes from their stored geometry, so that geometry
+    /// has to survive the pack/unpack round trip intact. A regression here would
+    /// leave saved rows that render as nothing at all.
+    @MainActor
+    func testSavedRouteKeepsItsGeometryForRedrawing() throws {
+        let (store, _) = try makeStore(inMemory: true)
+        let road = RoadSegmentBuilder.makeRoad(points: (0...8).map {
+            GeoPoint(lon: Double($0) * 0.0005, lat: 0.00025)
+        }, name: "Drawn Route")
+
+        store.saveRoute(road)
+        let saved = try XCTUnwrap(store.route(id: road.id))
+        XCTAssertEqual(saved.coordinates.count, road.geoPoints.count)
+        XCTAssertEqual(saved.coordinates.first?.lon ?? .nan, road.geoPoints.first?.lon ?? .nan,
+                       accuracy: 1e-9)
+        XCTAssertEqual(saved.coordinates.first?.lat ?? .nan, road.geoPoints.first?.lat ?? .nan,
+                       accuracy: 1e-9)
+        // The centre used to place the label must still be on the geometry.
+        XCTAssertGreaterThanOrEqual(saved.coordinates.count, 2)
+    }
+
     // MARK: - Codecs survive a byte-exact, possibly misaligned round trip
 
     func testTelemetryCodecRoundTrips() {

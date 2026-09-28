@@ -10,7 +10,9 @@ record the drive with live motion telemetry and spoken turn calls.
 
 - **Plan** — Map view of roads coloured by score, with a bottom preview card
   showing length, curvature, flow, and the first four pacenotes. Save routes,
-  jump to full details, or start a drive straight from the map.
+  jump to full details, or start a drive straight from the map. Tap the segment
+  button and mark a start and an end to route *any* drivable road — including
+  ones with no score in the bundled data — via OpenStreetMap.
 - **Drive** — Live HUD with a G-meter, speed/distance readout, and a co-driver
   that calls pacenotes ahead of each turn. Records GPS and motion data.
 - **History** — Previously recorded drives with their telemetry.
@@ -136,8 +138,8 @@ in the Tougefinder project, and is kept byte-for-byte compatible with it via the
 golden fixtures. Attribution is required when redistributing.
 
 The road data tiles are **not** covered by this license. They are generated
-locally and remain the property of the Tougefinder project, from which the
-underlying geometry is © OpenStreetMap contributors and licensed ODbL.
+locally by this repository's own script from roadcurvature.com's KML/KMZ output,
+where the underlying geometry is © OpenStreetMap contributors and licensed ODbL.
 
 ## Development notes
 

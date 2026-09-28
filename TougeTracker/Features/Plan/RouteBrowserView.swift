@@ -27,12 +27,37 @@ struct RouteBrowserView: View {
 
     @State private var tileLoadTask: Task<Void, Never>?
     @State private var searchTask: Task<Void, Never>?
+    /// In-flight OSM route lookup between the two segment taps.
+    @State private var routeTask: Task<Void, Never>?
+    /// True while the route is being fetched, so the map can show a spinner
+    /// instead of appearing to ignore the second tap.
+    @State private var isRouting = false
+    /// Message shown when the two taps cannot be joined by a drivable road.
+    @State private var routeError: String?
+    private let planner = RoutePlanner.shared
+
+    // MARK: Segment mode
+
+    /// When true, taps define a custom route instead of selecting a whole
+    /// road. See `handleSegmentTap`.
+    @State private var isSegmentMode = false
+    /// First of the two taps, kept as a raw coordinate: the user is allowed
+    /// to tap a road the app has never heard of.
+    @State private var segmentStart: CLLocationCoordinate2D?
+    /// Name of the road at the first tap, used to name the finished route.
+    /// Resolved from the bundled tiles when we can, and from OSM otherwise.
+    @State private var segmentStartRoadName: String?
+    /// Live preview of the route so far, and the finished road once routed.
+    @State private var customSegment: TougeRoad?
+    @State private var segmentError: String?
 
     var body: some View {
         NavigationStack {
             MapReader { proxy in
                 Map(position: $position) {
                     roadOverlays
+                    savedRouteLines
+                    segmentOverlays
                     savedRouteAnnotations
                     userMarker
                 }
@@ -47,7 +72,11 @@ struct RouteBrowserView: View {
                 // for roads. Hit-test the tap ourselves against visible geometry.
                 .onTapGesture { screenPoint in
                     guard let coordinate = proxy.convert(screenPoint, from: .local) else { return }
-                    selectedRoad = nearestRoad(to: coordinate, in: visibleRoads)
+                    if isSegmentMode {
+                        handleSegmentTap(at: coordinate)
+                    } else {
+                        selectedRoad = nearestRoad(to: coordinate, in: visibleRoads)
+                    }
                 }
                 .overlay(alignment: .top) {
                     topOverlay
@@ -75,6 +104,7 @@ struct RouteBrowserView: View {
                     }
                 }
                 .animation(.snappy(duration: 0.25), value: selectedRoad?.id)
+                .animation(.snappy(duration: 0.25), value: customSegment?.id)
                 // The header is drawn in the top overlay so "Plan" can sit at the
                 // very top of the map with the search button beside it.
                 .toolbar(.hidden, for: .navigationBar)
@@ -152,6 +182,51 @@ struct RouteBrowserView: View {
         }
     }
 
+    /// Saved routes are drawn from the store, not from the in-progress
+    /// selection.
+    ///
+    /// The polyline used to come from `customSegment`, which holds only the most
+    /// recent route — so building a second custom route made the first vanish
+    /// from the map even though it was safely saved. Reading geometry back out
+    /// of the store is what makes "save" mean the route stays.
+    @MapContentBuilder
+    private var savedRouteLines: some MapContent {
+        ForEach(store.routes()) { route in
+            if route.coordinates.count >= 2 {
+                MapPolyline(coordinates: route.coordinates.map(\.clLocation))
+                    .stroke(routeColor, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+            }
+        }
+    }
+
+    @MapContentBuilder
+    private var segmentOverlays: some MapContent {
+        // The route currently being previewed, before it is saved. Once saved it
+        // is drawn by `savedRouteLines`, so this is only the unsaved draft.
+        if let segment = customSegment,
+           segment.geoPoints.count >= 2,
+           !store.isSaved(id: segment.id) {
+            // Solid red, matching the selected-road convention on this map
+            // rather than the dashed "pending selection" styling.
+            MapPolyline(coordinates: segment.geoPoints.map(\.clLocation))
+                .stroke(routeColor, style: StrokeStyle(lineWidth: 6, lineCap: .round))
+        }
+        // While picking, show the first anchor so the user can see what the
+        // second tap will be routed from.
+        if let start = segmentStart {
+            Annotation("Start", coordinate: start) {
+                Image(systemName: "mappin.circle.fill")
+                    .font(.title)
+                    .foregroundStyle(routeColor)
+                    .shadow(color: .black.opacity(0.3), radius: 3, y: 1)
+            }
+        }
+    }
+
+    /// The colour of a custom route line and its start pin, so the pin always
+    /// matches the line it anchors.
+    private let routeColor = Color(red: 0.929, green: 0.239, blue: 0.196)
+
     @MapContentBuilder
     private var userMarker: some MapContent {
         UserAnnotation {
@@ -176,7 +251,13 @@ struct RouteBrowserView: View {
 
                 Spacer(minLength: 12)
 
+                segmentToggleButton
                 searchToggleButton
+            }
+
+            if isSegmentMode {
+                segmentHint
+                    .transition(.move(edge: .top).combined(with: .opacity))
             }
 
             if isSearchVisible {
@@ -187,11 +268,79 @@ struct RouteBrowserView: View {
             if isLoading {
                 loadingIndicator
             }
+
+            if isRouting {
+                // The second tap triggered an OSM lookup; without this the map
+                // looks like it ignored the tap for a second or two.
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Routing…")
+                        .font(.footnote).fontWeight(.medium)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(.regularMaterial, in: Capsule())
+                .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.top, 12)
         .animation(.snappy(duration: 0.25), value: isSearchVisible)
         .animation(.snappy(duration: 0.25), value: isLoading)
+        .animation(.snappy(duration: 0.25), value: isRouting)
+        .toast($routeError)
+    }
+
+    /// Enters "make a segment" mode. Pairs with the search button; the filled
+    /// state keeps the active mode readable at a glance.
+    private var segmentToggleButton: some View {
+        Button {
+            withAnimation(.snappy(duration: 0.25)) {
+                if isSegmentMode { exitSegmentMode() } else {
+                    isSegmentMode = true
+                    selectedRoad = nil
+                }
+            }
+        } label: {
+            Image(systemName: "point.topleft.down.to.point.bottomright.curvepath")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(isSegmentMode ? Color.white : Color.primary)
+                .frame(width: 46, height: 46)
+                .background(isSegmentMode ? AnyShapeStyle(Color.orange) : AnyShapeStyle(.regularMaterial),
+                            in: Circle())
+                .overlay(Circle().strokeBorder(Color.black.opacity(0.08), lineWidth: 1))
+                .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+        }
+        .accessibilityLabel(isSegmentMode ? "Cancel segment" : "Make a segment")
+    }
+
+    /// Coaching line for the two-tap gesture. It doubles as the error surface so
+    /// a failed second tap tells the user what to do next, not just what failed.
+    private var segmentHint: some View {
+        HStack(spacing: 8) {
+            Image(systemName: segmentStart == nil ? "hand.tap" : "arrow.left.and.right")
+                .foregroundStyle(.orange)
+            Text(segmentHintText)
+                .font(.footnote)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            Button("Cancel") { exitSegmentMode() }
+                .font(.footnote.weight(.semibold))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .strokeBorder(Color.orange.opacity(0.5), lineWidth: 1))
+        .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
+    }
+
+    private var segmentHintText: String {
+        if let segmentError { return segmentError }
+        if isRouting { return "Finding the road between those points…" }
+        return segmentStart == nil
+            ? "Tap the start of the road you want to drive."
+            : "Now tap the end."
     }
 
     /// Circular magnifier that expands/collapses the search field. Mirrors the
@@ -399,7 +548,7 @@ struct RouteBrowserView: View {
     /// zoomed all the way in. Clamped to roughly 15–400m.
     private func nearestRoad(to point: CLLocationCoordinate2D, in roads: [TougeRoad]) -> TougeRoad? {
         let spanKm = max(visibleRegion.span.latitudeDelta, visibleRegion.span.longitudeDelta) * 111.0
-        let threshold = min(max(spanKm * 1000 * 0.012, 15), 400)
+        let threshold = snapToleranceMeters()
         let tapped = GeoPoint.from(point)
 
         var nearest: (road: TougeRoad, distance: CLLocationDistance)?
@@ -423,10 +572,132 @@ struct RouteBrowserView: View {
         return nearest?.road
     }
 
+    // MARK: - Segment mode
+
+    /// Two taps make a route: the first sets the start, the second the end, and
+    /// the driving line between them comes back from OpenStreetMap.
+    ///
+    /// The taps are raw coordinates, not snapped to a known road — the whole
+    /// point is to be able to route a stretch the bundled tiles never covered.
+    /// When both taps do happen to land on the same ranked road we still take
+    /// the local geometry, which is instant and needs no network.
+    private func handleSegmentTap(at coordinate: CLLocationCoordinate2D) {
+        segmentError = nil
+        routeError = nil
+
+        guard let start = segmentStart else {
+            segmentStart = coordinate
+            // Start the name lookup now so it overlaps the user choosing their
+            // end point, rather than adding a round-trip after the route.
+            segmentStartRoadName = nearestRoad(to: coordinate, in: visibleRoads)?.displayName
+            Task { segmentStartRoadName = await planner.roadName(near: coordinate)
+                        ?? segmentStartRoadName }
+            return
+        }
+
+        // Fast path: both ends sit on one road we already hold, so the
+        // segment can be carved locally with no network round-trip.
+        if let points = localSegment(from: start, to: coordinate) {
+            finish(points: points)
+            return
+        }
+        routeBetween(start, coordinate)
+    }
+
+    /// Extracts the local stretch when both taps are on the same ranked road.
+    /// Returns nil whenever the local path does not apply — different roads, or
+    /// either end off any road we know — and the caller falls back to routing.
+    private func localSegment(from start: CLLocationCoordinate2D,
+                              to end: CLLocationCoordinate2D) -> [GeoPoint]? {
+        let tolerance = snapToleranceMeters(segment: true)
+        guard let a = RoadSegmentBuilder.snap(start, in: visibleRoads, toleranceMeters: tolerance),
+              let b = RoadSegmentBuilder.snap(end, in: visibleRoads, toleranceMeters: tolerance),
+              a.road.id == b.road.id,
+              let points = try? RoadSegmentBuilder.extract(from: a, to: b),
+              points.count >= 2 else { return nil }
+        return points
+    }
+
+    /// Routes between the two taps over OSM and shows the result.
+    private func routeBetween(_ start: CLLocationCoordinate2D,
+                              _ end: CLLocationCoordinate2D) {
+        routeTask?.cancel()
+        routeError = nil
+        isRouting = true
+
+        routeTask = Task {
+            defer { isRouting = false }
+            do {
+                let road = try await planner.road(from: start, to: end,
+                                                   name: segmentStartRoadName)
+                guard !Task.isCancelled else { return }
+                withAnimation(.snappy(duration: 0.25)) {
+                    customSegment = road
+                    selectedRoad = road
+                    segmentStart = nil
+                    isSegmentMode = false
+                }
+            } catch RoutePlanner.Failure.noRoute {
+                // Keep the first tap: the user most likely mis-tapped the end,
+                // and re-aiming is cheaper than starting over.
+                routeError = "No drivable road connects those two points."
+            } catch RoutePlanner.Failure.tooShort {
+                segmentStart = nil
+                routeError = "Those two points are too close together."
+            } catch {
+                routeError = "Couldn't reach OpenStreetMap. Check your connection."
+            }
+        }
+    }
+
+    /// Wraps a freshly built line and hands it to the preview card.
+    private func finish(points: [GeoPoint]) {
+        // Named after the road at the first tap so the route reads as a place,
+        // not a measurement. Falls back to the length when that road is
+        // unnamed, which is the only distinguishing handle left.
+        let meters = GeoMath.lengthMeters(points)
+        let fallback = "Segment \(settings.units.distanceString(meters))"
+        let road = RoadSegmentBuilder.makeRoad(
+            points: points,
+            name: segmentStartRoadName ?? fallback
+        )
+        withAnimation(.snappy(duration: 0.25)) {
+            customSegment = road
+            selectedRoad = road
+            segmentStart = nil
+            isSegmentMode = false
+        }
+    }
+
+    /// Leaves segment mode and discards any half-finished selection.
+    private func exitSegmentMode() {
+        isSegmentMode = false
+        segmentStart = nil
+        segmentStartRoadName = nil
+        customSegment = nil
+        segmentError = nil
+    }
+
+    // MARK: - Tap handling
+
     /// Half the road's own length, so long roads stay hittable near their ends
     /// even when the tap is far from the midpoint.
     private func roadSpanRadius(_ road: TougeRoad) -> CLLocationDistance {
         max(0, road.lengthMeters / 2)
+    }
+
+    /// Tap tolerance in meters, scaled to the zoom so a road is grabbable at
+    /// every scale. A fixed radius is untappable when zoomed out (a 0.25° region
+    /// spans ~28km) and far too greedy zoomed all the way in. Clamped to
+    /// roughly 15–400m.
+    ///
+    /// Segment mode uses a tighter clamp than road selection: a segment is
+    /// defined by where you tap on a *specific* stretch, so grabbing the
+    /// nearest of several near-parallel roads is more likely to be wrong here.
+    private func snapToleranceMeters(segment: Bool = false) -> CLLocationDistance {
+        let spanKm = max(visibleRegion.span.latitudeDelta, visibleRegion.span.longitudeDelta) * 111.0
+        let fraction = segment ? 0.006 : 0.012
+        return min(max(spanKm * 1000 * fraction, 15), segment ? 200 : 400)
     }
 
     // MARK: - Styling

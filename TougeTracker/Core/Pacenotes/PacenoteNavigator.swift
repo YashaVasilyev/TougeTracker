@@ -39,6 +39,14 @@ public final class PacenoteNavigator {
     /// Multiplier on the speed-scaled call distance (1.0 = default).
     public var callDistanceScale: Double = 1.0
 
+    /// Upper bound on how many notes one call may chain.
+    ///
+    /// A co-driver call is a breath, not a paragraph. Past a few corners the
+    /// driver has stopped listening, and the tail would be spoken over the
+    /// corner that actually matters. Anything not chained stays pending and is
+    /// called on approach instead.
+    private let maxItemsPerCall = 3
+
     private let originalCoordinates: [CLLocationCoordinate2D]
     private var directionLocked = false
     /// Index of the next pacenote that has not been called yet.
@@ -104,25 +112,46 @@ public final class PacenoteNavigator {
               progressDistance > pacenotes[nextNoteIndex].endDist + 15 {
             nextNoteIndex += 1
         }
+        // Also step over notes already called but not yet driven past. Without
+        // this the cursor parks on the first announced note, the `already
+        // announced` guard below rejects it forever, and every later corner is
+        // silently skipped.
+        while nextNoteIndex < pacenotes.count,
+              announcedIndexes.contains(nextNoteIndex),
+              progressDistance <= pacenotes[nextNoteIndex].endDist + 15 {
+            nextNoteIndex += 1
+        }
 
         guard !offRoute, nextNoteIndex < pacenotes.count else { return nil }
         let note = pacenotes[nextNoteIndex]
         let remaining = note.startDist - progressDistance
+        // `> -5` tolerates a fix that lands a few metres into the corner, but a
+        // note the driver has genuinely passed must not block the ones behind it.
         guard remaining <= callDistance(speed: speed), remaining > -5 else { return nil }
-        guard !announcedIndexes.contains(nextNoteIndex) else { return nil }
 
-        // Build the call, chaining imminent following notes (rally "into"/"and").
+        // Build the call, chaining the next few imminent notes ("into" /
+        // "followed by"). Chaining is bounded by how far ahead the *driver* is,
+        // not just by the gap to the previous note: the gap test alone let a run
+        // of closely-spaced corners chain all the way down the road, so a
+        // single call read out the whole route at once.
         announcedIndexes.insert(nextNoteIndex)
         var items = [PacenoteCall.Item(note: note, remaining: max(remaining, 0), connector: nil)]
         var look = nextNoteIndex + 1
         var prevEnd = note.endDist
-        while look < pacenotes.count {
+        let horizon = callDistance(speed: speed)
+
+        while look < pacenotes.count, items.count < maxItemsPerCall {
             let next = pacenotes[look]
             let gap = next.startDist - prevEnd
-            if gap >= 0, gap < 50, !announcedIndexes.contains(look) {
-                let connector = gap < 20 ? "into" : "and"
+            // A chained note must also be within the call horizon, or the
+            // driver is told about a corner they are still far from.
+            let nextRemaining = next.startDist - progressDistance
+            let isImminent = nextRemaining <= horizon
+            if gap >= 0, gap < 50, isImminent,
+               !announcedIndexes.contains(look) {
+                let connector = gap < 20 ? "into" : "followed by"
                 items.append(PacenoteCall.Item(note: next,
-                                                remaining: max(next.startDist - progressDistance, 0),
+                                                remaining: max(nextRemaining, 0),
                                                 connector: connector))
                 announcedIndexes.insert(look)
                 prevEnd = next.endDist
