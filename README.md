@@ -4,6 +4,8 @@ An iOS app for exploring and driving touge (mountain pass) roads. Browse
 scored road segments on a map, generate rally-style pacenotes for a route, then
 record the drive with live motion telemetry and spoken turn calls.
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 ## Features
 
 - **Plan** — Map view of roads coloured by score, with a bottom preview card
@@ -116,7 +118,15 @@ sibling Tougefinder project, which derives road geometry from OpenStreetMap
 
 ## License
 
-No license has been assigned to this project yet.
+MIT — see [LICENSE](LICENSE).
+
+The pacenote algorithm in `Core/Pacenotes/` is a port of the JS implementation
+in the Tougefinder project, and is kept byte-for-byte compatible with it via the
+golden fixtures. Attribution is required when redistributing.
+
+The road data tiles are **not** covered by this license. They are generated
+locally and remain the property of the Tougefinder project, from which the
+underlying geometry is © OpenStreetMap contributors and licensed ODbL.
 
 ## Development notes
 
