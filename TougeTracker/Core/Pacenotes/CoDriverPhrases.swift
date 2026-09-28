@@ -62,7 +62,15 @@ public enum CoDriverPhrases {
                 // almost every call, repeating an unchanged number. The
                 // distances that matter are the ones a note carries itself:
                 // a straight's length, and the corner's own severity.
-                parts.append(body)
+                //
+                // A connector can still open a call: two corners a short
+                // distance apart can be announced separately, and the driver
+                // needs to know they are one movement rather than two.
+                if let connector = item.connector {
+                    parts.append("\(connector) \(body)")
+                } else {
+                    parts.append(body)
+                }
             } else if let connector = item.connector {
                 parts.append("\(connector) \(body)")
             } else {

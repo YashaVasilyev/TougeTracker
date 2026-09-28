@@ -134,6 +134,38 @@ final class DriveSimulatorTests: XCTestCase {
         XCTAssertTrue(sawStraight, "fixture roads produced no straights to check")
     }
 
+    func testCloseCallsAreJoinedByAConnector() {
+        // Two corners a short distance apart are sometimes announced as separate
+        // calls, because the chain only reaches notes that were already imminent.
+        // The second call must then open with "into" or "followed by".
+        //
+        // The transcript alone cannot prove this for any given pair: a note is
+        // called before it is reached, so two call sites can sit metres apart
+        // while the notes themselves are a long way apart — in which case no
+        // connector is correct. So check the two things a transcript can show:
+        // the mechanism fires somewhere, and it never fires after a straight.
+        var withConnector = 0
+        for name in ["db1_74432352_School_House_Road", "syn_zigzag_sharp",
+                     "db0_105072685_Descente_2"] {
+            let calls = DriveSimulator().simulate(coordinates: road(name))
+            XCTAssertFalse(calls.isEmpty, "\(name) produced no calls")
+            for (i, call) in calls.enumerated() {
+                let opens = call.phrase.hasPrefix("into ")
+                        || call.phrase.hasPrefix("followed by ")
+                if opens { withConnector += 1 }
+                guard i > 0, opens else { continue }
+                // A straight already stated the distance, so nothing follows it.
+                let previous = calls[i - 1].phrase
+                    .split(separator: ", ").last?
+                    .trimmingCharacters(in: .whitespaces) ?? ""
+                XCTAssertNil(Int(previous),
+                             "\(name): connector after a straight — \(call.phrase)")
+            }
+        }
+        XCTAssertGreaterThan(withConnector, 0,
+                             "no call ever opened with a connector")
+    }
+
     func testTranscriptIsReadable() throws {
         let transcript = DriveSimulator().transcript(coordinates: road("db1_74432352_School_House_Road"))
         XCTAssertTrue(transcript.contains("calls"))

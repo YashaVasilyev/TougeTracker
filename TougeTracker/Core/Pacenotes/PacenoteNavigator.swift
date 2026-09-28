@@ -52,6 +52,9 @@ public final class PacenoteNavigator {
     /// Index of the next pacenote that has not been called yet.
     public private(set) var nextNoteIndex: Int = 0
     private var announcedIndexes: Set<Int> = []
+    /// The most recent note put into a call, used to decide whether a new call
+    /// needs an opening connector. Reset with the rest of the navigation state.
+    private var lastAnnouncedNote: Pacenote?
     private var offRouteSince: Date?
 
     public init(coordinates: [CLLocationCoordinate2D],
@@ -135,7 +138,15 @@ public final class PacenoteNavigator {
         // of closely-spaced corners chain all the way down the road, so a
         // single call read out the whole route at once.
         announcedIndexes.insert(nextNoteIndex)
-        var items = [PacenoteCall.Item(note: note, remaining: max(remaining, 0), connector: nil)]
+        // A connector can also be needed *between* calls: the chain above only
+        // reaches notes that were already imminent, so two corners a short
+        // distance apart could still be announced as separate calls with
+        // nothing joining them. Decide the opening connector from the note
+        // called last, using the same apex-to-apex measure as the written notes.
+        let openingConnector = connector(after: lastAnnouncedNote, before: note)
+        var items = [PacenoteCall.Item(note: note, remaining: max(remaining, 0),
+                                       connector: openingConnector)]
+        lastAnnouncedNote = note
         var look = nextNoteIndex + 1
         var prevEnd = note.endDist
         // Tracks the previously chained note so a corner following a straight can
@@ -182,6 +193,7 @@ public final class PacenoteNavigator {
                                             remaining: max(nextRemaining, 0),
                                             connector: connector))
             announcedIndexes.insert(look)
+            lastAnnouncedNote = next
             prevEnd = next.endDist
             prev = next
             look += 1
@@ -191,6 +203,19 @@ public final class PacenoteNavigator {
             if next.isStraight { break }
         }
         return PacenoteCall(items: items)
+    }
+
+    /// The connector that should open a call for `next`, given the note called
+    /// just before it.
+    ///
+    /// Reuses the written-note rule so speech and text agree: under 20m apex to
+    /// apex the two corners are one movement ("into"), up to 50m there is a short
+    /// run between them ("followed by"), and beyond that the straight carries
+    /// the distance instead. Nothing follows a straight, which already said how
+    /// far.
+    private func connector(after previous: Pacenote?, before next: Pacenote) -> String? {
+        guard let previous, !previous.isStraight, !next.isStraight else { return nil }
+        return PacenoteGenerator.connector(from: previous, to: next)
     }
 
     private func applySnap(_ snap: GeoMath.PolylineSnap) {
@@ -213,6 +238,7 @@ public final class PacenoteNavigator {
         pacenotes = PacenoteGenerator.generate(pts).turns
         nextNoteIndex = 0
         announcedIndexes = []
+        lastAnnouncedNote = nil
     }
 
     /// The next `count` pacenotes that are due (not yet passed, not yet called).
@@ -238,6 +264,7 @@ public final class PacenoteNavigator {
         progressDistance = 0
         nextNoteIndex = 0
         announcedIndexes = []
+        lastAnnouncedNote = nil
         offRoute = false
         offRouteSince = nil
         directionReversed = false
