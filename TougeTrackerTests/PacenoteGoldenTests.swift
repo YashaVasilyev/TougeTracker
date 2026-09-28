@@ -65,26 +65,30 @@ final class DriveSimulatorTests: XCTestCase {
     }
 
     func testNoCallSpeaksAGradeAsDigits() {
-        // "3 L" would be read aloud as "three el". Distances are digits and are
-        // fine, so strip them before checking for a grade written numerically.
+        // "3 L" would be read aloud as "three el". A bare number in a call is a
+        // straight's length; anything else numeric would be a grade.
         for name in ["db0_105072685_Descente_2", "db1_74432352_School_House_Road",
                      "syn_hairpin", "syn_zigzag_sharp"] {
             let calls = DriveSimulator().simulate(coordinates: road(name))
             XCTAssertFalse(calls.isEmpty, "\(name) produced no calls")
             for call in calls {
-                // Strip the leading distance, the connectors, and any bare
-                // distance item; a grade must be the only thing left speaking.
-                var text = call.phrase
-                text = text.replacingOccurrences(of: "into ", with: "")
-                text = text.replacingOccurrences(of: "followed by ", with: "")
-                text = text.replacingOccurrences(
-                    of: #"^[0-9]+, "#, with: "",
-                    options: .regularExpression)
-                let items = text.split(separator: ", ")
-                    .filter { Int($0) == nil }   // drop straight distances
+                let items = call.phrase.split(separator: ", ")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { Int($0) == nil }   // straight lengths are numbers
                     .joined(separator: " ")
                 XCTAssertFalse(items.contains(where: { $0.isNumber }),
                                "\(name): \(call.phrase)")
+            }
+        }
+    }
+
+    func testNoCallStartsWithALeadingDistance() {
+        // "190, five right" was said before nearly every corner at speed.
+        for name in ["db1_74432352_School_House_Road", "syn_zigzag_sharp"] {
+            for call in DriveSimulator().simulate(coordinates: road(name)) {
+                let first = call.phrase.split(separator: ", ").first ?? ""
+                XCTAssertFalse(first.contains(where: { $0.isNumber }),
+                               "\(name): call begins with a distance — \(call.phrase)")
             }
         }
     }
@@ -320,9 +324,12 @@ final class CoDriverSpeechTests: XCTestCase {
         XCTAssertTrue(phrase.contains("100"), phrase)
     }
 
-    func testLeadingDistanceIsStillCalledBeforeTheFirstCorner() {
+    func testNoLeadingDistanceIsSpoken() {
+        // The navigator already decides when a note is worth calling, and at
+        // speed the distance barely changes between corners. Repeating it made
+        // the co-driver say "190" before almost every call.
         let call = PacenoteCall(items: [item(note(grade: "1", dir: .right), remaining: 150)])
-        XCTAssertEqual(speaker.phrase(for: call, format: .rally), "150, one right")
+        XCTAssertEqual(speaker.phrase(for: call, format: .rally), "one right")
     }
 
     /// The navigator omits the connector after a straight, so the call still has

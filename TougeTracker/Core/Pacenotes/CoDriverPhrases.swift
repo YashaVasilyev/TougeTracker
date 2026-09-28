@@ -56,11 +56,13 @@ public enum CoDriverPhrases {
             let body = "\(gradeWord) \(dirWord)\(lengthWord)"
 
             if i == 0 {
-                var p = body
-                if item.remaining > 12 {
-                    p = "\(callDistance(item.remaining)), \(p)"
-                }
-                parts.append(p)
+                // No leading distance. The navigator already decides when a
+                // note is worth calling, and at speed the call distance barely
+                // changes between corners — so the co-driver said "190" before
+                // almost every call, repeating an unchanged number. The
+                // distances that matter are the ones a note carries itself:
+                // a straight's length, and the corner's own severity.
+                parts.append(body)
             } else if let connector = item.connector {
                 parts.append("\(connector) \(body)")
             } else {
