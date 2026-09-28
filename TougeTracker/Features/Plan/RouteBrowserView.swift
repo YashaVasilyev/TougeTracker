@@ -49,17 +49,24 @@ struct RouteBrowserView: View {
                     topOverlay
                 }
                 .overlay(alignment: .bottom) {
-                    if let road = selectedRoad {
-                        RoadPreviewCard(
-                            road: road,
-                            settings: settings,
-                            isSaved: store.isSaved(id: road.id),
-                            onSave: { _ = store.saveRoute(road) },
-                            onStart: { startDrive(road) },
-                            onDetails: { detailedRoad = road },
-                            onDismiss: { selectedRoad = nil }
-                        )
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                    VStack(spacing: 10) {
+                        if let road = selectedRoad {
+                            RoadPreviewCard(
+                                road: road,
+                                settings: settings,
+                                isSaved: store.isSaved(id: road.id),
+                                onSave: { _ = store.saveRoute(road) },
+                                onStart: { startDrive(road) },
+                                onDetails: { detailedRoad = road },
+                                onDismiss: { selectedRoad = nil }
+                            )
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                        }
+                        // Recenter lives under the card so the two never overlap.
+                        HStack {
+                            Spacer()
+                            recenterButton
+                        }
                     }
                 }
                 .animation(.snappy(duration: 0.25), value: selectedRoad?.id)
@@ -67,14 +74,6 @@ struct RouteBrowserView: View {
                 .searchable(text: $searchText)
                 .onChange(of: searchText) { _, _ in
                     searchLocation()
-                }
-                .toolbar {
-                    ToolbarItem(placement: .navigationBarLeading) {
-                        Button("Near me") {
-                            Task { await centerOnUser() }
-                        }
-                        .disabled(locationReader.loading)
-                    }
                 }
                 .sheet(item: $detailedRoad) { road in
                     NavigationStack {
@@ -169,6 +168,27 @@ struct RouteBrowserView: View {
         }
         .padding(.horizontal, 12)
         .padding(.top, 8)
+    }
+
+    /// Floating recenter control, bottom-right. Replaces the old "Near me"
+    /// toolbar button so the nav bar stays uncluttered and the button sits
+    /// within thumb reach.
+    private var recenterButton: some View {
+        Button {
+            Task { await centerOnUser() }
+        } label: {
+            Image(systemName: "location.north.fill")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.blue)
+                .frame(width: 46, height: 46)
+                .background(.regularMaterial, in: Circle())
+                .overlay(Circle().strokeBorder(Color.black.opacity(0.08), lineWidth: 1))
+                .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+        }
+        .disabled(locationReader.loading)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 12)
+        .accessibilityLabel("Center on my location")
     }
 
     private var loadingIndicator: some View {
