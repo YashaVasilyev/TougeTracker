@@ -25,6 +25,9 @@ TougeTracker/Info.plist
 #   node scripts/fetch-curvature-tiles.mjs
 # to regenerate it locally before building or running tests.
 TougeTracker/Resources/tiles/
+# Compiled from the tiles above by scripts/compile-road-tiles.py. Regenerate
+# rather than commit: it is 43MB of derived data, and the source is local.
+TougeTracker/Resources/road-tiles/
 
 # Local agent tooling / personal notes, not project source.
 .commandcode/

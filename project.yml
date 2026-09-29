@@ -14,8 +14,13 @@ targets:
     platform: iOS
     sources:
       - path: TougeTracker
+        # The full-precision tiles are the source data and are ~166MB of JSON.
+        # They are compiled down before shipping (scripts/compile-road-tiles.py)
+        # and only the compressed copies are bundled.
+        excludes:
+          - "Resources/tiles"
     resources:
-      - TougeTracker/Resources/tiles
+      - TougeTracker/Resources/road-tiles
     info:
       path: TougeTracker/Info.plist
       properties:
