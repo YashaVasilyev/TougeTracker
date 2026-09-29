@@ -39,12 +39,6 @@ Package.resolved
 # scripts/fetch-curvature-tiles.mjs)
 .curvature-cache/
 
-# Recorded co-driver voice packs. Not tracked: the audio is third-party (an
-# Assetto Corsa rally pack) and is far too large for the repository. Drop a pack
-# in to hear a simulated drive:
-#   ./scripts/simulate-drive-audio.sh 90
-TougeTracker/Resources/codriver-voices/
-
 # Python bytecode from running the scripts directly
 __pycache__/
 *.pyc
