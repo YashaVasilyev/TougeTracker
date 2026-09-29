@@ -9,7 +9,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 SPEED="${1:-80}"
 OUT="${2:-/tmp/simdrive-audio}"
-PACK="TougeTracker/Resources/codriver-voices/PhillMills"
+PACK="voice-packs/PhillMills"
 
 [ -d "$PACK" ] || { echo "voice pack not found at $PACK" >&2; exit 1; }
 

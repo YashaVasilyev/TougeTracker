@@ -41,6 +41,7 @@ public final class AppSettings {
         pacenoteFormat = PacenoteFormat(rawValue: defaults.string(forKey: "settings.pacenoteFormat") ?? "") ?? .rally
         voiceEnabled = defaults.object(forKey: "settings.voiceEnabled") as? Bool ?? true
         speechRate = defaults.object(forKey: "settings.speechRate") as? Double ?? 1.0
+        useRecordedVoice = defaults.object(forKey: "settings.useRecordedVoice") as? Bool ?? true
         callDistanceScale = defaults.object(forKey: "settings.callDistanceScale") as? Double ?? 1.0
     }
 
@@ -61,6 +62,15 @@ public final class AppSettings {
     }
 
     /// AVSpeechUtterance rate multiplier relative to the default rate.
+    /// Prefer the recorded rally co-driver over the system voice.
+    ///
+    /// Defaults on: the pack is bundled, and it is the difference between a
+    /// co-driver and a phone reading a list. The system voice stays available
+    /// as a fallback and as a deliberate choice.
+    public var useRecordedVoice: Bool = true {
+        didSet { defaults.set(useRecordedVoice, forKey: "settings.useRecordedVoice") }
+    }
+
     public var speechRate: Double = 1.0 {
         didSet { defaults.set(speechRate, forKey: "settings.speechRate") }
     }

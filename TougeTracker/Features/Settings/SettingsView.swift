@@ -29,8 +29,23 @@ struct SettingsView: View {
                         get: { settings.voiceEnabled },
                         set: { settings.voiceEnabled = $0 }
                     ))
+                    Toggle("Recorded co-driver", isOn: .init(
+                        get: { settings.useRecordedVoice },
+                        set: { settings.useRecordedVoice = $0 }
+                    ))
+                    .disabled(!CoDriverSpeaker.shared.hasRecordedVoice)
+                    if CoDriverSpeaker.shared.hasRecordedVoice {
+                        Text("Uses the bundled rally voice pack.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        // Without the pack the toggle would silently do nothing.
+                        Text("No voice pack in this build — using the system voice.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     Slider(value: $settings.speechRate, in: 0.5...2.0, step: 0.05)
-                    Text(String(format: "Rate: %.2f", settings.speechRate))
+                    Text(settings.useRecordedVoice && CoDriverSpeaker.shared.hasRecordedVoice
+                         ? "Rate (system voice only)" : String(format: "Rate: %.2f", settings.speechRate))
+                        .font(.caption).foregroundStyle(.secondary)
                     Slider(value: $settings.callDistanceScale, in: 0.5...2.0, step: 0.1)
                     Text(String(format: "Call distance scale: %.1f", settings.callDistanceScale))
                 }

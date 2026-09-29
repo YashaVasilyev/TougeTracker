@@ -39,7 +39,10 @@ class Pack:
         # Absolute, because the list file ffmpeg reads is resolved relative to
         # its own location — the call being built — not to this pack.
         self.dir = os.path.abspath(directory)
-        self.have = {n[:-4] for n in os.listdir(self.dir) if n.endswith(".wav")}
+        # The masters are WAV; the app bundles the compiled AAC. Accept either so
+        # this runs against whichever copy is to hand.
+        self.have = {n.rsplit(".", 1)[0] for n in os.listdir(self.dir)
+                     if n.endswith((".wav", ".m4a"))}
         self.distances = sorted(int(n[4:]) for n in self.have
                                 if n.startswith("Dist") and n[4:].isdigit())
         # Distances we had to round to a recorded clip, so the substitution is
@@ -87,7 +90,11 @@ class Pack:
             clip = self.get(f"And-{direction}{grade}")
             if clip:
                 return [clip] + tail
-            return [self.get(f"{direction}{grade}")] + tail
+            # No "followed by one" in the pack. Say the link with an "into one"
+            # clip and the severity plainly: dropping the link would call two
+            # corners that sound unrelated. Must stay in step with VoicePack
+            # in the app, or a simulated drive does not sound like the real one.
+            return [self.get(f"Into-{direction}1"), self.get(f"{direction}{grade}")]
         clip = self.get(f"{direction}{grade}")
         if clip:
             return [clip] + tail
@@ -155,7 +162,7 @@ def build(pack, phrase, out_path):
 if __name__ == "__main__":
     audio_dir = sys.argv[1]
     pack = Pack(sys.argv[2] if len(sys.argv) > 2
-                else "TougeTracker/Resources/codriver-voices/PhillMills")
+                else "voice-packs/PhillMills")
     built = missing = 0
     for road in sorted(os.listdir(audio_dir)):
         manifest = os.path.join(audio_dir, road, "manifest.tsv")
