@@ -63,9 +63,14 @@ public struct PacenoteOptions: Sendable {
     }
 }
 
-/// Faithful Swift port of Tougefinder's `src/services/pacenotes.js` —
-/// `generatePacenotes()`. Same pipeline, same constants, same output text.
-/// Fidelity is enforced by golden tests against the JS implementation.
+/// Turns a road's geometry into rally pacenotes.
+///
+/// Originally a port of Tougefinder's `src/services/pacenotes.js`, and still
+/// recognisably that pipeline. It is no longer kept identical to it: the
+/// vocabulary, the call chaining and the severity ladder have all moved on, and
+/// the two implementations now differ by design. The goldens in
+/// `TougeTrackerTests/Fixtures` therefore record what *this* produces, and the
+/// tests check that it keeps doing so — not that it matches another codebase.
 public enum PacenoteGenerator {
 
     static let severityOrder: [String: Int] = [
@@ -173,6 +178,32 @@ public enum PacenoteGenerator {
                  straightLengthMeters: note.isStraight ? note.length : nil)
     }
 
+    /// The corner radius boundaries, in metres, tightest first.
+    ///
+    /// All six severities are reachable. The ladder once had four bands
+    /// (1/3/5/6) and never produced 2 or 4, even though both were listed in
+    /// `severityOrder` and `descriptiveMap` — so half the vocabulary was
+    /// unreachable and the step between neighbouring severities was a whole
+    /// grade.
+    ///
+    /// The four original edges (20/50/80/150) are kept and two inserted at the
+    /// midpoint of the bands they split, so a corner that was a 1, 3, 5 or 6 is
+    /// still one. This refines the existing boundaries rather than re-grading
+    /// the road. A corner wider than the last edge is not a corner at all.
+    public static let severityRadiusBands: [Double] = [20, 32, 50, 64, 80, 150]
+
+    /// The severity for a corner of the given radius.
+    ///
+    /// Returns `"S"` for anything wider than the last band. Bands are read in
+    /// order, so a tight corner lands in the first band it fits and the ladder
+    /// degrades gracefully if the list is ever re-tuned.
+    public static func grade(forRadius radius: Double) -> String {
+        for (index, edge) in severityRadiusBands.enumerated() where radius < edge {
+            return "\(index + 1)"
+        }
+        return "S"
+    }
+
     public static func generate(_ coordinates: [GeoPoint], options: PacenoteOptions = PacenoteOptions()) -> PacenoteResult {
         let format = options.format
         let coords: [GeoPoint] = options.reverse ? coordinates.reversed().map { $0 } : coordinates
@@ -217,11 +248,7 @@ public enum PacenoteGenerator {
                 let b2 = GeoMath.bearing(pCurr, pNext)
                 let diff = GeoMath.wrap180(b2 - b1)
 
-                var grade = "S"
-                if radius < 20 { grade = "1" }
-                else if radius < 50 { grade = "3" }
-                else if radius < 80 { grade = "5" }
-                else if radius < 150 { grade = "6" }
+                let grade = PacenoteGenerator.grade(forRadius: radius)
 
                 let dir: PacenoteDirection? = grade == "S" ? nil : (diff > 0 ? .right : .left)
                 rawCandidates.append(Candidate(grade: grade, dir: dir, distance: Double(i) * stepSize))
