@@ -40,12 +40,35 @@ class Pack:
         # its own location — the call being built — not to this pack.
         self.dir = os.path.abspath(directory)
         self.have = {n[:-4] for n in os.listdir(self.dir) if n.endswith(".wav")}
+        self.distances = sorted(int(n[4:]) for n in self.have
+                                if n.startswith("Dist") and n[4:].isdigit())
+        # Distances we had to round to a recorded clip, so the substitution is
+        # visible in the build log rather than only audible as a wrong number.
+        self.rounded = []
 
     def get(self, *names):
         for name in names:
             if name in self.have:
                 return os.path.join(self.dir, name + ".wav")
         return None
+
+    def distance(self, metres):
+        """The clip for a straight of `metres`.
+
+        The pack only records fifteen distances — 40 to 90 in tens, then 100,
+        130, 150, 170 and 200 upwards in fifties — but we call a distance every
+        ten metres. Without this, three distances in five found no clip and were
+        dropped silently, so "square right, 220" came out as just "square
+        right": the co-driver gave the corner and never said how far.
+
+        The nearest recorded distance is within 20m of any we call, which is
+        inside the rounding a co-driver already does.
+        """
+        if f"Dist{metres}" in self.have:
+            return os.path.join(self.dir, f"Dist{metres}.wav")
+        nearest = min(self.distances, key=lambda d: (abs(d - metres), -d))
+        self.rounded.append((metres, nearest))
+        return os.path.join(self.dir, f"Dist{nearest}.wav")
 
 
     def clips_for(self, connector, grade, direction, modifier):
@@ -105,7 +128,7 @@ def clips_for_phrase(pack, phrase):
             continue
         if item.isdigit():
             # A straight is called as a distance alone.
-            out.append(pack.get(f"Dist{item}"))
+            out.append(pack.distance(int(item)))
             continue
         parsed = parse_item(item)
         if parsed:
@@ -154,3 +177,6 @@ if __name__ == "__main__":
                 missing += 1
         open(manifest, "w").write("\n".join(out) + "\n")
     print(f"built {built} calls, {missing} with no matching clips")
+    if pack.rounded:
+        shown = ", ".join(f"{a}->{b}" for a, b in sorted(set(pack.rounded)))
+        print(f"rounded {len(set(pack.rounded))} distances to a recorded clip: {shown}")
