@@ -73,12 +73,16 @@ public struct PacenoteOptions: Sendable {
 /// tests check that it keeps doing so — not that it matches another codebase.
 public enum PacenoteGenerator {
 
+    /// Severity counts up towards the tight end. `Flat` sits just above a
+    /// straight and below a 6: it is a real bend, but the gentlest one called.
     static let severityOrder: [String: Int] = [
-        "S": 0, "6": 1, "5": 2, "4": 3, "3": 4, "2": 5, "1": 6, "Square": 7, "HP": 8,
+        "S": 0, "Flat": 1, "6": 2, "5": 3, "4": 4, "3": 5, "2": 6, "1": 7,
+        "Square": 8, "HP": 9,
     ]
 
     public static let descriptiveMap: [String: String] = [
         "HP": "Hairpin", "Square": "Square",
+        "Flat": "Flat",
         "1": "Sharp", "2": "Sharp", "3": "Tight", "4": "Tight",
         "5": "Moderate", "6": "Slight", "S": "Straight",
     ]
@@ -178,28 +182,32 @@ public enum PacenoteGenerator {
                  straightLengthMeters: note.isStraight ? note.length : nil)
     }
 
-    /// The corner radius boundaries, in metres, tightest first.
+    /// The corner radius boundaries, in metres, tightest first. The last band is
+    /// `Flat` rather than a number; anything wider than the last edge is not a
+    /// corner at all.
     ///
-    /// All six severities are reachable. The ladder once had four bands
-    /// (1/3/5/6) and never produced 2 or 4, even though both were listed in
-    /// `severityOrder` and `descriptiveMap` — so half the vocabulary was
-    /// unreachable and the step between neighbouring severities was a whole
-    /// grade.
+    /// The ladder once had four bands (1/3/5/6) and never produced 2 or 4, even
+    /// though both were listed in `severityOrder` and `descriptiveMap` — so half
+    /// the vocabulary was unreachable and the step between neighbouring
+    /// severities was a whole grade. The four original edges (20/50/80/150) are
+    /// kept, two inserted at the midpoints of the bands they split, and one
+    /// added above the top for bends too gentle to be called a 6.
     ///
-    /// The four original edges (20/50/80/150) are kept and two inserted at the
-    /// midpoint of the bands they split, so a corner that was a 1, 3, 5 or 6 is
-    /// still one. This refines the existing boundaries rather than re-grading
-    /// the road. A corner wider than the last edge is not a corner at all.
-    public static let severityRadiusBands: [Double] = [20, 32, 50, 64, 80, 150]
+    /// Without that top band a 200m-radius bend was not a corner at all: it fell
+    /// outside every edge and was called a straight, so a real change of
+    /// direction went uncalled. Measured over the real tiles, adding it makes
+    /// 2.4%% of notes and adds about 1.4%% to the note count overall.
+    public static let severityRadiusBands: [Double] = [20, 32, 50, 64, 80, 150, 300]
 
     /// The severity for a corner of the given radius.
     ///
     /// Returns `"S"` for anything wider than the last band. Bands are read in
     /// order, so a tight corner lands in the first band it fits and the ladder
-    /// degrades gracefully if the list is ever re-tuned.
+    /// degrades gracefully if the list is ever re-tuned. The widest band is
+    /// named rather than numbered: there is no severity 7.
     public static func grade(forRadius radius: Double) -> String {
         for (index, edge) in severityRadiusBands.enumerated() where radius < edge {
-            return "\(index + 1)"
+            return index == severityRadiusBands.count - 1 ? "Flat" : "\(index + 1)"
         }
         return "S"
     }

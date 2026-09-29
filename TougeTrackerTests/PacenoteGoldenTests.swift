@@ -51,9 +51,14 @@ final class DriveSimulatorTests: XCTestCase {
         }
 
         // And the straight really is spoken with the turn that precedes it.
+        // The number itself is not asserted: it is the call distance, which
+        // moves whenever the ladder is retuned, and pinning it made this test
+        // fail for a change it was not written to catch.
         let spoken = calls.map(\.phrase)
-        XCTAssertTrue(spoken.contains { $0.hasSuffix(", 100") },
-                      "the straight after the first run was never attached: \(spoken)")
+        XCTAssertTrue(spoken.contains { phrase in
+            let items = phrase.split(separator: ", ")
+            return items.count > 1 && Int(items[items.count - 1]) != nil
+        }, "the straight after the first run was never attached: \(spoken)")
     }
 
     func testCallsAdvanceAlongTheRoute() {

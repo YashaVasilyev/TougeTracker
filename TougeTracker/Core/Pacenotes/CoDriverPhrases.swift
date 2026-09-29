@@ -10,7 +10,7 @@ public enum CoDriverPhrases {
     private static let rallyGradeWords: [String: String] = [
         "1": "one", "2": "two", "3": "three", "4": "four",
         "5": "five", "6": "six", "HP": "hairpin", "Square": "square",
-        "S": "straight",
+        "Flat": "flat", "S": "straight",
     ]
 
     /// Rounds to the nearest 10m, the precision a co-driver actually calls.
