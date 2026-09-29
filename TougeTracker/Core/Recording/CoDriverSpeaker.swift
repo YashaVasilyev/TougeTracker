@@ -62,6 +62,7 @@ public final class CoDriverSpeaker: NSObject, AVSpeechSynthesizerDelegate,
         player = nil
         queue = []
         queueIndex = 0
+        pendingIfBusy = false
     }
 
     private func configureAudio() {
@@ -74,12 +75,24 @@ public final class CoDriverSpeaker: NSObject, AVSpeechSynthesizerDelegate,
     }
 
     /// Plays a call's clips back to back, each with its natural length.
+    ///
+    /// If the previous call is still being spoken it is *not* cut off. Stopping
+    /// mid-word is worse than being a fraction late: the driver hears half a
+    /// corner, and half a corner is a corner they might act on. The new call
+    /// waits its turn. The navigator only calls a corner when it is imminent, so
+    /// the wait is bounded by the call distance, not unbounded.
     private func speakClips(_ clips: [String]) {
+        let wasSpeaking = player?.isPlaying == true || synth.isSpeaking
         stop()
         queue = clips
         queueIndex = 0
+        pendingIfBusy = wasSpeaking
+        if wasSpeaking { return }
         playNext()
     }
+
+    /// Whether a call arrived while the previous one was still going.
+    private var pendingIfBusy = false
 
     private func playNext() {
         guard queueIndex < queue.count else { return }
@@ -105,7 +118,25 @@ public final class CoDriverSpeaker: NSObject, AVSpeechSynthesizerDelegate,
 
     public func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         queueIndex += 1
-        playNext()
+        if queueIndex >= queue.count { finishCall() }
+        else { playNext() }
+    }
+
+    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer,
+                                  didFinish utterance: AVSpeechUtterance) {
+        finishCall()
+    }
+
+    /// The queue is empty, so start anything that was held back.
+    private func finishCall() {
+        player = nil
+        if pendingIfBusy {
+            pendingIfBusy = false
+            playNext()
+        } else {
+            queue = []
+            queueIndex = 0
+        }
     }
 
     private func speakWithSystemVoice(_ phrase: String) {

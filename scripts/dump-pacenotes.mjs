@@ -7,12 +7,28 @@
  * square, sweep, zigzag, circle, esses) and writes a single JSON fixture file
  * consumed by PacenoteGoldenTests.
  *
- * Usage:  node scripts/dump-pacenotes.mjs
+ * WARNING: this REPLACES the fixture set wholesale. It picks roads from
+ * Tougefinder's live database, which has changed since the current fixtures
+ * were generated, so running it today swaps every road in the suite for a
+ * different set and breaks the tests that name them.
+ *
+ * To refresh expectations for the roads already in the suite, use
+ * `scripts/dumpgoldens` instead — it leaves the corpus alone.
+ *
+ * Usage:  node scripts/dump-pacanotes.mjs --replace-corpus
  * Requires: a sibling ../Tougefinder checkout with node_modules installed.
  */
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
+
+if (!process.argv.includes("--replace-corpus")) {
+  console.error("Refusing to run: this replaces the whole fixture corpus.\n" +
+    "To refresh expectations without changing which roads are tested, run:\n" +
+    "  scripts/dumpgoldens\n" +
+    "Pass --replace-corpus if you really mean to build a new corpus.");
+  process.exit(2);
+}
 
 const here = dirname(fileURLToPath(import.meta.url));
 const tougefinderRoot = join(here, "..", "..", "Tougefinder");
