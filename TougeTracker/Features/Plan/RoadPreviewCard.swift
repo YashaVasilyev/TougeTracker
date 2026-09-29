@@ -11,6 +11,11 @@ struct RoadPreviewCard: View {
     let onStart: () -> Void
     let onDetails: () -> Void
     let onDismiss: () -> Void
+    /// Drives the same road the other way. The card re-renders from the
+    /// reversed geometry, so the notes and the arrow both follow.
+    let onReverse: () -> Void
+    /// Opens the turn map: where each corner is, and how severe it is.
+    let onTurns: () -> Void
 
     /// Generated once in `init` rather than computed in `body`: the generator
     /// walks every coordinate of the road, so a computed property would re-run
@@ -20,7 +25,8 @@ struct RoadPreviewCard: View {
 
     init(road: TougeRoad, settings: AppSettings, isSaved: Bool,
          onSave: @escaping () -> Void, onStart: @escaping () -> Void,
-         onDetails: @escaping () -> Void, onDismiss: @escaping () -> Void) {
+         onDetails: @escaping () -> Void, onDismiss: @escaping () -> Void,
+         onReverse: @escaping () -> Void, onTurns: @escaping () -> Void) {
         self.road = road
         self.settings = settings
         self.isSaved = isSaved
@@ -28,8 +34,14 @@ struct RoadPreviewCard: View {
         self.onStart = onStart
         self.onDetails = onDetails
         self.onDismiss = onDismiss
+        self.onReverse = onReverse
+        self.onTurns = onTurns
         self.pacenotes = PacenoteGenerator.generate(road.geoPoints).turns
     }
+
+    /// Corners only: a straight is a distance, not somewhere to point at, and
+    /// the turn map marks places.
+    private var turnCount: Int { pacenotes.filter { !$0.isStraight }.count }
 
     /// The first few notes, rendered with the connector that joins each to the
     /// one before it. Without it the chips read as disconnected grades.
@@ -41,6 +53,7 @@ struct RoadPreviewCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
+            direction
             stats
             if !previewLines.isEmpty {
                 notesPreview
@@ -97,6 +110,36 @@ struct RoadPreviewCard: View {
         .foregroundStyle(.white)
         .padding(.horizontal, 10).padding(.vertical, 5)
         .background(ScoreStyle.color(for: score), in: RoundedRectangle(cornerRadius: 9))
+    }
+
+    // MARK: - Direction
+
+    /// Which way the route runs.
+    ///
+    /// A polyline with no arrow on it does not say which end you start from, and
+    /// on a switchback the two directions are entirely different drives — the
+    /// same corners, opposite handedness, a different set of notes.
+    @ViewBuilder
+    private var direction: some View {
+        if road.direction.isKnown {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.up")
+                    .rotationEffect(.degrees(road.direction.arrowRotation))
+                    .font(.caption)
+                    .foregroundStyle(.tint)
+                Text("Runs \(road.direction.compass)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Button(action: onReverse) {
+                    Label("Reverse", systemImage: "arrow.left.arrow.right")
+                        .labelStyle(.titleAndIcon)
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+            }
+        }
     }
 
     // MARK: - Stats
@@ -166,6 +209,13 @@ struct RoadPreviewCard: View {
             }
             .buttonStyle(.bordered)
             .disabled(isSaved)
+
+            Button(action: onTurns) {
+                Label("\(turnCount)", systemImage: "mappin.and.ellipse")
+            }
+            .buttonStyle(.bordered)
+            .disabled(turnCount == 0)
+            .accessibilityLabel("Show \(turnCount) turns on the map")
 
             Button(action: onDetails) {
                 Image(systemName: "list.bullet")

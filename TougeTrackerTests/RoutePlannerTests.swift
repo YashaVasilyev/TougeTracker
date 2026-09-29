@@ -66,6 +66,71 @@ final class RoutePlannerTests: XCTestCase {
     }
 
 
+    // MARK: - Multi-point routing
+
+    func testMultiPointRouteSendsEveryPointAsAWaypoint() async throws {
+        let mid = CLLocationCoordinate2D(latitude: 42.3550, longitude: -71.0970)
+        let planner = self.planner(responding: okBody)
+        _ = try await planner.road(through: [start, mid, end])
+
+        let url = try XCTUnwrap(StubURLProtocol.lastRequest?.url)
+        // All three points, in the order they were tapped. The router reads the
+        // first as the origin and the rest as vias, so dropping or reordering
+        // one here silently produces a different road.
+        XCTAssertTrue(url.path.contains(
+            "-71.104000,42.351000;-71.097000,42.355000;-71.090000,42.360000"),
+            "unexpected path: \(url.path)")
+        // The profile and the full geometry must survive the longer path.
+        XCTAssertTrue(url.absoluteString.contains("/route/v1/driving/"))
+        XCTAssertTrue(try XCTUnwrap(url.query).contains("overview=full"))
+    }
+
+    func testTwoPointRouteIsUnchangedByTheMultiPointForm() async throws {
+        // The ordinary start/end case has to keep producing exactly the request
+        // it always did, or every existing route silently changes shape.
+        let planner = self.planner(responding: okBody)
+        _ = try await planner.road(from: start, to: end)
+
+        let url = try XCTUnwrap(StubURLProtocol.lastRequest?.url)
+        XCTAssertEqual(url.path,
+                       "/route/v1/driving/-71.104000,42.351000;-71.090000,42.360000")
+    }
+
+    func testSinglePointRouteIsRejected() async {
+        // One point has no direction. It must not reach the network as a
+        // degenerate request.
+        let planner = self.planner(responding: okBody)
+        do {
+            _ = try await planner.road(through: [start])
+            XCTFail("a one-point route should not be routable")
+        } catch RoutePlanner.Failure.tooShort {
+            XCTAssertEqual(StubURLProtocol.requestCount, 0, "no request should be made")
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
+
+    func testRouteCacheDistinguishesItineraryOrder() async throws {
+        // A→B→C and C→B→A are different drives. If the cache key ignored order
+        // the second would silently return the first's line.
+        let mid = CLLocationCoordinate2D(latitude: 42.3550, longitude: -71.0970)
+        let planner = self.planner(responding: okBody)
+        _ = try await planner.road(through: [start, mid, end])
+        XCTAssertEqual(StubURLProtocol.requestCount, 1)
+
+        _ = try await planner.road(through: [end, mid, start])
+        XCTAssertEqual(StubURLProtocol.requestCount, 2,
+                       "reversing the itinerary must miss the cache")
+    }
+
+    func testRepeatedItineraryIsServedFromCache() async throws {
+        let mid = CLLocationCoordinate2D(latitude: 42.3550, longitude: -71.0970)
+        let planner = self.planner(responding: okBody)
+        _ = try await planner.road(through: [start, mid, end])
+        _ = try await planner.road(through: [start, mid, end])
+        XCTAssertEqual(StubURLProtocol.requestCount, 1, "second call should hit the cache")
+    }
+
     // MARK: - Decoding
 
     /// Regression test for the exact defect that shipped: an endpoint without a

@@ -8,9 +8,16 @@ struct RouteDetailView: View {
     @Environment(TabRouter.self) private var router: TabRouter
     @Environment(\.dismiss) private var dismiss
 
-    let road: TougeRoad
+    /// The route as currently shown. Reversal replaces it here, and the
+    /// pacenotes below are regenerated from the new geometry — which is what
+    /// makes a reversed road read as a different drive rather than the same one
+    /// relabelled.
+    @State private var road: TougeRoad
 
     @State private var pacenotes: [Pacenote] = []
+
+    /// Whether the labelled turn map is presented over this sheet.
+    @State private var showingTurnMap = false
 
     /// Notes rendered with the connector between each pair, measured apex to
     /// apex. Rendering each note on its own showed a bare column of grades with
@@ -20,36 +27,44 @@ struct RouteDetailView: View {
     }
 
     init(road: TougeRoad) {
-        self.road = road
+        _road = State(initialValue: road)
         let preview = PacenoteGenerator.generate(road.geoPoints)
         _pacenotes = State(wrappedValue: preview.turns)
+    }
+
+    /// Flips the route end to end and rebuilds its notes.
+    ///
+    /// Reversing the geometry is enough: the notes carry the direction of
+    /// travel, so a corner that was a left becomes a right once the line runs
+    /// the other way. Anything cached from the old line has to be thrown away
+    /// with it.
+    private func reverseRoute() {
+        road = road.reversed()
+        pacenotes = PacenoteGenerator.generate(road.geoPoints).turns
     }
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                Map(initialPosition: .region(fittedRegion(for: road.geoPoints.map { $0.clLocation })), interactionModes: .all) {
-                    if road.geoPoints.count > 1 {
-                        MapPolyline(coordinates: road.geoPoints.map { $0.clLocation })
-                            .stroke(.blue.opacity(0.5), lineWidth: 3)
-                    }
-                    ForEach(Array(pacenotes.enumerated()), id: \.offset) { _, note in
-                        Annotation(coordinate: note.apex.clLocation) {
-                            EmptyView()
-                        } label: {
-                            Image(systemName: "mappin.circle.fill")
-                                .foregroundStyle(.red).font(.caption).offset(y: -10)
-                        }
-                    }
-                }
-                .frame(height: 200)
-                .mapStyle(.standard)
+                roadMap
 
                 Form {
                     Section("About") {
                         Text(road.displayName).font(.headline)
                         Text(String(format: "%.1f mi · Curvature %d/100", road.lengthMiles ?? 0, road.curvatureScore ?? 0))
                             .font(.caption).foregroundStyle(.secondary)
+                        if road.direction.isKnown {
+                            HStack(spacing: 6) {
+                                Image(systemName: "arrow.up")
+                                    .rotationEffect(.degrees(road.direction.arrowRotation))
+                                    .font(.caption)
+                                    .foregroundStyle(.tint)
+                                Text("Runs \(road.direction.compass), ends \(road.direction.reversedCompass)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .accessibilityLabel("Runs towards \(road.direction.compass)")
+                        }
                     }
                     Section("Pacenotes (\(pacenotes.count))") {
                         if pacenotes.isEmpty {
@@ -75,6 +90,9 @@ struct RouteDetailView: View {
             }
             .navigationTitle("Route")
             .navigationBarTitleDisplayMode(.inline)
+            .sheet(isPresented: $showingTurnMap) {
+                TurnMapView(road: road, settings: settings)
+            }
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Start") {
@@ -94,6 +112,21 @@ struct RouteDetailView: View {
                         router.enterDriveMode()
                     }
                 }
+                ToolbarItem(placement: .secondaryAction) {
+                    Button {
+                        reverseRoute()
+                    } label: {
+                        Label("Reverse", systemImage: "arrow.left.arrow.right")
+                    }
+                }
+                ToolbarItem(placement: .secondaryAction) {
+                    Button {
+                        showingTurnMap = true
+                    } label: {
+                        Label("Turn map", systemImage: "mappin.and.ellipse")
+                    }
+                    .disabled(pacenotes.allSatisfy(\.isStraight))
+                }
                 ToolbarItem(placement: .cancellationAction) {
                     if store.isSaved(id: road.id) {
                         Text("Saved")
@@ -106,6 +139,34 @@ struct RouteDetailView: View {
                 }
             }
         }
+    }
+
+    /// The road, its pacenote apexes, and nothing else.
+    ///
+    /// Split out of `body` because the marker content is enough to push the
+    /// whole view past what the type checker will do in reasonable time.
+    private var roadMap: some View {
+        Map(initialPosition: .region(fittedRegion(for: road.geoPoints.map { $0.clLocation })),
+            interactionModes: .all) {
+            if road.geoPoints.count > 1 {
+                MapPolyline(coordinates: road.geoPoints.map { $0.clLocation })
+                    .stroke(.blue.opacity(0.5), lineWidth: 3)
+            }
+            // Labelled with the grade, not an identical red pin: the point of a
+            // marker is to say what the corner is, and an unlabelled pin only
+            // says where it is. Straights are skipped — they are a distance,
+            // not a place.
+            ForEach(Array(pacenotes.enumerated()), id: \.offset) { _, note in
+                if !note.isStraight {
+                    Annotation(TurnMapView.turnLabel(for: note),
+                               coordinate: note.apex.clLocation) {
+                        GradeMarker(text: TurnMapView.turnLabel(for: note),
+                                    grade: note.grade)
+                    }
+                }
+            }
+        }
+        .mapStyle(.standard)
     }
 
     private func fittedRegion(for coords: [CLLocationCoordinate2D]) -> MKCoordinateRegion {

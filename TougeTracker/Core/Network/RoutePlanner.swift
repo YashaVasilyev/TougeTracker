@@ -70,23 +70,41 @@ public final class RoutePlanner: @unchecked Sendable {
     public func road(from start: CLLocationCoordinate2D,
                      to end: CLLocationCoordinate2D,
                      name: String? = nil) async throws -> TougeRoad {
-        let key = cacheKey(start, end)
+        try await road(through: [start, end], name: name)
+    }
+
+    /// Routes a driving line through an ordered list of points and returns it as
+    /// a `TougeRoad` carrying the real measured length.
+    ///
+    /// The list is the whole itinerary in driving order. Two points is the
+    /// ordinary start/end case; three or more threads the route through
+    /// waypoints, because the router treats every point after the first as a
+    /// via — that is what makes a multi-stop route one continuous driving line
+    /// rather than a chain of separate legs the user has to stitch together.
+    public func road(through points: [CLLocationCoordinate2D],
+                     name: String? = nil) async throws -> TougeRoad {
+        // The contract is "at least two points". A one-point route has no
+        // direction, and letting it through would return a degenerate line.
+        guard points.count >= 2 else { throw Failure.tooShort }
+
+        let key = cacheKey(points)
         if let hit = cached(key) { return hit }
 
-        let points = try await route(from: start, to: end)
-        guard GeoMath.lengthMeters(points) >= minimumLengthMeters else {
+        let routed = try await route(through: points)
+        guard GeoMath.lengthMeters(routed) >= minimumLengthMeters else {
             throw Failure.tooShort
         }
 
         // A real road name beats the length-based fallback; whitespace-only
         // counts as absent.
         let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let finalName = (trimmed?.isEmpty == false) ? trimmed! : defaultName(for: points)
+        let finalName = (trimmed?.isEmpty == false) ? trimmed! : defaultName(for: routed)
 
-        let road = makeRoad(points: points, name: finalName)
+        let road = makeRoad(points: routed, name: finalName)
         store(key, road: road)
         return road
     }
+
 
     // MARK: - Road naming
 
@@ -157,13 +175,24 @@ public final class RoutePlanner: @unchecked Sendable {
         }
     }
 
+    /// The driving line between exactly two points.
+    ///
+    /// Kept as a two-point spelling of `route(through:)` so callers that only
+    /// have a start and an end read as what they are.
     func route(from start: CLLocationCoordinate2D,
                to end: CLLocationCoordinate2D) async throws -> [GeoPoint] {
-        // OSRM wants lon,lat — the reverse of the lat/lon taps we hold.
+        try await route(through: [start, end])
+    }
+
+    /// The driving line through an ordered list of points.
+    func route(through points: [CLLocationCoordinate2D]) async throws -> [GeoPoint] {
+        // OSRM wants lon,lat — the reverse of the lat/lon taps we hold. Every
+        // point after the first is a via, so N points give one continuous line
+        // through them in order.
         var components = URLComponents()
-        components.path = String(format: "%f,%f;%f,%f",
-                                 start.longitude, start.latitude,
-                                 end.longitude, end.latitude)
+        components.path = points
+            .map { String(format: "%f,%f", $0.longitude, $0.latitude) }
+            .joined(separator: ";")
         // `overview=full` returns the complete geometry; the default
         // simplification would visibly straighten the corners and shorten
         // the measured length.
@@ -254,12 +283,13 @@ public final class RoutePlanner: @unchecked Sendable {
         "Route \(Int((GeoMath.lengthMeters(points) / 1609.344 * 10).rounded()) / 10) mi"
     }
 
-    private func cacheKey(_ start: CLLocationCoordinate2D,
-                          _ end: CLLocationCoordinate2D) -> String {
-        // ~1m resolution: fine enough to hit on a re-tap of the same two spots,
-        // coarse enough that float noise cannot cause a miss.
-        String(format: "%.5f,%.5f->%.5f,%.5f",
-               start.latitude, start.longitude, end.latitude, end.longitude)
+    private func cacheKey(_ points: [CLLocationCoordinate2D]) -> String {
+        // ~1m resolution: fine enough to hit on a re-tap of the same points,
+        // coarse enough that float noise cannot cause a miss. The order matters,
+        // because a route driven A→B→C is not the same line as C→B→A.
+        points
+            .map { String(format: "%.5f,%.5f", $0.latitude, $0.longitude) }
+            .joined(separator: "->")
     }
 
     private func cached(_ key: String) -> TougeRoad? {

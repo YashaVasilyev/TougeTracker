@@ -82,4 +82,29 @@ public struct TougeRoad: Codable, Identifiable, Hashable, Sendable {
     public var geoPoints: [GeoPoint] { coordinates.map { GeoPoint(lon: $0[0], lat: $0[1]) } }
     public var lengthMeters: Double { (lengthMiles ?? 0) * 1609.344 }
     public var displayName: String { (name?.isEmpty == false) ? name! : "Unnamed Road" }
+
+    /// The same road, driven the other way.
+    ///
+    /// The id is kept: this is the same stretch of tarmac, not a different
+    /// route, and keeping it means a saved road that is reversed updates in
+    /// place rather than appearing twice in the list. Direction lives in the
+    /// geometry, and everything downstream of it — pacenotes, scores, the
+    /// call sequence — is regenerated from the reversed line.
+    ///
+    /// The center is unchanged by reversal (it is a bounding-box midpoint), so
+    /// it is carried across rather than recomputed.
+    public func reversed() -> TougeRoad {
+        guard coordinates.count > 1 else { return self }
+        return TougeRoad(
+            id: id, name: name, type: type,
+            coordinates: coordinates.reversed(),
+            lengthMiles: lengthMiles,
+            curvatureScore: curvatureScore, flowScore: flowScore,
+            totalScore: totalScore,
+            centerLat: centerLat, centerLon: centerLon
+        )
+    }
+
+    /// Which way this road runs, for showing on the preview and detail panels.
+    public var direction: RouteDirection { RouteDirection(coordinates: coordinates) }
 }
