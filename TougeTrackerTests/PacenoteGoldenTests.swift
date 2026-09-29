@@ -30,6 +30,32 @@ final class DriveSimulatorTests: XCTestCase {
         XCTAssertTrue(DriveSimulator().simulate(coordinates: coords).isEmpty)
     }
 
+    func testStraightIsFoldedIntoTheTurnCallBeforeIt() {
+        // A straight is a distance, not a movement, so it belongs to the call
+        // for the corner it follows: "six left long, 100".
+        //
+        // The regression this guards: a call already full of three corners
+        // pushed the straight out of the chain, and it was then announced a
+        // metre later on its own — a bare number with no corner attached, which
+        // is exactly what a co-driver never says.
+        let coords = road("db0_105072685_Descente_2")
+        let calls = DriveSimulator().simulate(coordinates: coords,
+                                              options: .init(speedMps: 45 / 3.6))
+        XCTAssertFalse(calls.isEmpty)
+
+        // No call may be nothing but a distance: that is the stranded straight.
+        for call in calls {
+            let items = call.phrase.split(separator: ", ").map(String.init)
+            XCTAssertFalse(items.count == 1 && Int(items[0]) != nil,
+                           "straight announced on its own: \(call.phrase)")
+        }
+
+        // And the straight really is spoken with the turn that precedes it.
+        let spoken = calls.map(\.phrase)
+        XCTAssertTrue(spoken.contains { $0.hasSuffix(", 100") },
+                      "the straight after the first run was never attached: \(spoken)")
+    }
+
     func testCallsAdvanceAlongTheRoute() {
         // Calls must be in driving order and never go backwards, or the co-driver
         // would repeat a corner the driver has already passed.

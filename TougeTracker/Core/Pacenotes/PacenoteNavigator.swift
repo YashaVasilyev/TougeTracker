@@ -152,9 +152,11 @@ public final class PacenoteNavigator {
         // Tracks the previously chained note so a corner following a straight can
         // drop its connector.
         var prev = note
+        // One straight per call: it ends the call, so a second could not join.
+        let tookStraight = note.isStraight
         let horizon = callDistance(speed: speed)
 
-        while look < pacenotes.count, items.count < maxItemsPerCall {
+        while look < pacenotes.count {
             let next = pacenotes[look]
             let gap = next.startDist - prevEnd
             let nextRemaining = next.startDist - progressDistance
@@ -168,13 +170,20 @@ public final class PacenoteNavigator {
             let followsImmediately = gap >= 0 && gap < 1
             let isImminent = nextRemaining <= horizon
 
+            // A straight is a distance, not a movement, so it does not count
+            // towards the call limit: "six left long, 100" is one breath, where
+            // six corners is not. Counting it meant a call already full of three
+            // corners pushed the straight out, and it was then announced a metre
+            // later on its own as a bare number with no corner attached.
             let include: Bool
-            if next.isStraight && followsImmediately {
+            if next.isStraight && followsImmediately && !tookStraight {
                 include = true
-            } else {
+            } else if items.count < maxItemsPerCall {
                 // A corner may only join if it is close enough to be useful
                 // now, and close enough behind to be part of the same movement.
                 include = gap >= 0 && gap < 50 && isImminent
+            } else {
+                include = false
             }
             guard include, !announcedIndexes.contains(look) else { break }
 
@@ -199,7 +208,8 @@ public final class PacenoteNavigator {
             look += 1
 
             // Stop after a straight: the corner at the far end of it is not
-            // imminent, and it must be called at its own proper distance.
+            // imminent, and it must be called at its own proper distance. The
+            // loop ends here, so `tookStraight` needs no updating.
             if next.isStraight { break }
         }
         return PacenoteCall(items: items)
