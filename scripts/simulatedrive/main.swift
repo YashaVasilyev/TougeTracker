@@ -36,7 +36,7 @@ for (index, fixture) in fixtures.enumerated() {
     let calls = sim.simulate(coordinates: coords, options: options)
     print(sim.transcript(coordinates: coords, options: options))
 
-    if mode == "audio" {
+    if mode == "manifest" || mode == "audio" {
         // One clip per call, plus a manifest so the clips can be laid back down
         // on the timeline they came from.
         //
@@ -52,6 +52,14 @@ for (index, fixture) in fixtures.enumerated() {
         var manifest = "clip\tseconds\tphrase\n"
         for (n, call) in calls.enumerated() {
             let name = String(format: "%03d-%.1fs", n, call.seconds)
+            // "manifest" records the timing and the words without speaking them,
+            // for when a recorded voice pack will supply the audio instead. The
+            // system voice takes about a second a call to synthesise, which is
+            // time spent on clips that are then thrown away.
+            if mode == "manifest" {
+                manifest += "\(name)\t\(String(format: "%.2f", call.seconds))\t\(call.phrase)\n"
+                continue
+            }
             let spoken = Process()
             spoken.executableURL = URL(fileURLWithPath: "/usr/bin/say")
             spoken.arguments = ["-v", "Samantha", "-o", "\(dir)/\(name).aiff",

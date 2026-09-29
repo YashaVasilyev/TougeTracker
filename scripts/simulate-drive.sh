@@ -1,6 +1,6 @@
 #!/bin/bash
 # Replays roads as drives and prints the co-driver's calls.
-# Usage: ./scripts/simulate-drive.sh [speedKph] [text|audio] [outDir]
+# Usage: ./scripts/simulate-drive.sh [speedKph] [text|manifest|audio] [outDir]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 OUT="${TMPDIR:-/tmp}/simdrive"

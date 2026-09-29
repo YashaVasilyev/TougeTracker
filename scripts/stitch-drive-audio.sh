@@ -45,7 +45,22 @@ for dir in "$AUDIO_DIR"/*/; do
     i=$(( i + 1 ))
   done < "$manifest"
 
-  ls "$tmp"/*.wav | sed "s|^|file '|; s|$|'|" > "$tmp/list.txt"
-  ffmpeg -v error -y -f concat -safe 0 -i "$tmp/list.txt" -c copy "$OUT_DIR/$road.wav"
+  # The calls have to be mixed, not concatenated: each segment is silence then
+  # its call then silence out to the end of the drive, so overlaying them lines
+  # every call up on the same timeline. Concatenating would play the segments
+  # one after another and stretch a 6s drive to nearly 100s.
+  #
+  # The input list is read with a while loop rather than mapfile, which macOS's
+  # bash 3.2 does not have.
+  inputs=()
+  while IFS= read -r line; do inputs+=("$line"); done < <(ls "$tmp"/*.wav)
+  args=()
+  for f in "${inputs[@]}"; do args+=(-i "$f"); done
+  # The pack's own clips are already recorded at full scale, so the mix is left
+  # at that level rather than normalised — normalising would quiet the roads
+  # with one call to match the busy ones.
+  ffmpeg -v error -y "${args[@]}" \
+    -filter_complex "amix=inputs=${#inputs[@]}:duration=longest:normalize=0" \
+    -t "$total" -ar 22050 -ac 1 -c:a pcm_s16le "$OUT_DIR/$road.wav"
   echo "stitched $road.wav — $i calls, ${total}s"
 done
