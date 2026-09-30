@@ -18,6 +18,25 @@ struct RouteDetailView: View {
 
     /// Whether the labelled turn map is presented over this sheet.
     @State private var showingTurnMap = false
+    /// The sheet the share action presents.
+    @State private var exportFile: ExportFile?
+
+    struct ExportFile: Identifiable {
+        let id = UUID()
+        let name: String
+        let text: String
+    }
+
+    /// The call sheet, which is the one output of this whole pipeline that can
+    /// be read without a map and without a signal.
+    private var callSheet: String {
+        RouteExporter.callSheet(road: road, notes: pacenotes, settings: settings)
+    }
+
+    private func export(text: String, name: String) {
+        exportFile = ExportFile(name: RouteExporter.fileName(for: road, pathExtension: name),
+                                text: text)
+    }
 
     /// Notes rendered with the connector between each pair, measured apex to
     /// apex. Rendering each note on its own showed a bare column of grades with
@@ -102,6 +121,9 @@ struct RouteDetailView: View {
             .sheet(isPresented: $showingTurnMap) {
                 TurnMapView(road: road, settings: settings)
             }
+            .sheet(item: $exportFile) { file in
+                ShareSheet(items: [file.text])
+            }
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Start") {
@@ -135,6 +157,23 @@ struct RouteDetailView: View {
                         Label("Turn map", systemImage: "mappin.and.ellipse")
                     }
                     .disabled(pacenotes.allSatisfy(\.isStraight))
+                }
+                ToolbarItem(placement: .secondaryAction) {
+                    Menu {
+                        Button {
+                            export(text: callSheet, name: "txt")
+                        } label: {
+                            Label("Call sheet", systemImage: "doc.text")
+                        }
+                        Button {
+                            export(text: RouteExporter.gpx(road: road), name: "gpx")
+                        } label: {
+                            Label("GPX track", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                        }
+                    } label: {
+                        Label("Export", systemImage: "square.and.arrow.up")
+                    }
+                    .accessibilityLabel("Export this route")
                 }
                 ToolbarItem(placement: .cancellationAction) {
                     if store.isSaved(id: road.id) {
