@@ -80,13 +80,16 @@ public struct VoicePack {
             }
             guard let parsed = parse(text) else { return [] }
             return clips(connector: parsed.connector, grade: parsed.grade,
-                         direction: parsed.direction, modifier: parsed.modifier)
+                         direction: parsed.direction, modifier: parsed.modifier,
+                         trend: parsed.trend)
         }
     }
 
     private func clips(connector: String?, grade: String,
-                       direction: String, modifier: String?) -> [String] {
-        let tail = modifier.flatMap { available.contains($0) ? [$0] : nil } ?? []
+                       direction: String, modifier: String?, trend: String?) -> [String] {
+        var tail = modifier.flatMap { available.contains($0) ? [$0] : nil } ?? []
+        // Said after the corner, and after the length: "three left long tightens".
+        if let trend, available.contains(trend) { tail.append(trend) }
         var spoken: [String]
 
         switch connector {
@@ -131,7 +134,8 @@ public struct VoicePack {
 
     /// Splits one phrase item into its parts, or nil if it is not a corner.
     private func parse(_ item: String) -> (connector: String?, grade: String,
-                                           direction: String, modifier: String?)? {
+                                           direction: String, modifier: String?,
+                                           trend: String?)? {
         var rest = item
         var connector: String?
         for (prefix, name) in [("into ", "into"), ("followed by ", "and")] where rest.hasPrefix(prefix) {
@@ -139,18 +143,32 @@ public struct VoicePack {
             rest.removeFirst(prefix.count)
             break
         }
+        // Trailing words are stripped in the order they appear, not in a fixed
+        // order. "three left long tightens" does not end with " long", so a
+        // fixed order finds neither suffix and the whole call fails to parse.
         var modifier: String?
-        for (suffix, name) in [(" very long", "VeryLong"), (" long", "Long")] where rest.hasSuffix(suffix) {
-            modifier = name
-            rest.removeLast(suffix.count)
-            break
+        var trend: String?
+        while true {
+            if let (suffix, name) = [(" very long", "VeryLong"), (" long", "Long")]
+                .first(where: { rest.hasSuffix($0.0) }), modifier == nil {
+                modifier = name
+                rest.removeLast(suffix.count)
+            } else if let (suffix, name) = [(" tightens", "Tightens"), (" opens", "Opens")]
+                .first(where: { rest.hasSuffix($0.0) }), trend == nil {
+                // The pack has these as separate takes, so the call is stitched
+                // from two clips rather than spoken as one phrase.
+                trend = name
+                rest.removeLast(suffix.count)
+            } else {
+                break
+            }
         }
         let parts = rest.split(separator: " ")
         guard parts.count >= 2,
               let direction = VoicePack.directions[String(parts.last!)]
         else { return nil }
         guard let grade = VoicePack.grades[String(parts[0])] else { return nil }
-        return (connector, grade, direction, modifier)
+        return (connector, grade, direction, modifier, trend)
     }
 
     private func first(_ names: String...) -> [String]? {

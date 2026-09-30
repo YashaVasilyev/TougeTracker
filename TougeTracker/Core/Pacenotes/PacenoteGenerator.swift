@@ -12,6 +12,23 @@ public enum PacenoteDirection: String, Codable, Sendable {
 }
 
 public struct Pacenote: Codable, Equatable, Hashable, Sendable {
+    /// Saved routes store pacenotes as JSON, so a note written before tightens
+    /// and opens existed has no `trend` key at all. Decoding it as `.none` keeps
+    /// every route saved so far readable rather than failing the whole route.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        grade = try c.decode(String.self, forKey: .grade)
+        direction = try c.decodeIfPresent(PacenoteDirection.self, forKey: .direction)
+        startDist = try c.decode(Double.self, forKey: .startDist)
+        endDist = try c.decode(Double.self, forKey: .endDist)
+        length = try c.decode(Double.self, forKey: .length)
+        isLong = try c.decode(Bool.self, forKey: .isLong)
+        isVeryLong = try c.decode(Bool.self, forKey: .isVeryLong)
+        apex = try c.decode(GeoPoint.self, forKey: .apex)
+        text = try c.decode(String.self, forKey: .text)
+        trend = try c.decodeIfPresent(CornerTrend.self, forKey: .trend) ?? .none
+    }
+
     /// "1", "3", "5", "6", "Square", or "HP" (grades 2/4 are never emitted by the algorithm).
     /// "S" marks a straight, which has no direction.
     public var grade: String
@@ -25,9 +42,12 @@ public struct Pacenote: Codable, Equatable, Hashable, Sendable {
     public var apex: GeoPoint
     /// Baked text in rally format, e.g. "4 R long" (matches the JS generator output).
     public var text: String
+    /// Whether the corner tightens or opens as it goes. `.none` for a straight.
+    public var trend: CornerTrend
 
     public init(grade: String, direction: PacenoteDirection?, startDist: Double, endDist: Double,
-                length: Double, isLong: Bool, isVeryLong: Bool, apex: GeoPoint, text: String) {
+                length: Double, isLong: Bool, isVeryLong: Bool, apex: GeoPoint, text: String,
+                trend: CornerTrend = .none) {
         self.grade = grade
         self.direction = direction
         self.startDist = startDist
@@ -37,6 +57,7 @@ public struct Pacenote: Codable, Equatable, Hashable, Sendable {
         self.isVeryLong = isVeryLong
         self.apex = apex
         self.text = text
+        self.trend = trend
     }
 
     /// A straight has no direction to call.
@@ -274,6 +295,7 @@ public enum PacenoteGenerator {
             var isLong = false
             var isVeryLong = false
             var markForRemoval = false
+            var trend: CornerTrend = .none
         }
         var turns: [Turn] = []
         var currentTurn: Turn? = nil
@@ -331,6 +353,25 @@ public enum PacenoteGenerator {
                 turns[idx].tightestGrade = "Square"
                 turns[idx].grades = turns[idx].grades.map { _ in "Square" }
             }
+        }
+
+        // --- Step 4.2: Does each corner tighten or open? ---
+        //
+        // A separate pass over the original geometry, because the trend needs a
+        // finer sampling and a longer baseline than severity does, and changing
+        // the severity pass to suit it would inflate the note count by 11% to
+        // annotate three percent of corners.
+        //
+        // Two exclusions, both because the modifier would contradict the grade.
+        // A hairpin is already the tightest thing in the vocabulary, and saying
+        // one tightens adds nothing. A grade 1 cannot get tighter either, and
+        // "one right tightens" is not a thing a co-driver says.
+        for idx in turns.indices {
+            guard turns[idx].tightestGrade != "HP",
+                  turns[idx].tightestGrade != "1" else { continue }
+            turns[idx].trend = CornerTrendDetector.trend(along: smoothedCoords,
+                                                         from: turns[idx].startDist,
+                                                         to: turns[idx].endDist)
         }
 
         // --- Step 4.5: Drop alternating grade-6 squiggles (3+ in a row) ---
@@ -429,7 +470,10 @@ public enum PacenoteGenerator {
             let turnText = describe(grade: t.tightestGrade, dir: t.dir, format: format,
                                     isLong: t.isLong, isVeryLong: t.isVeryLong,
                                     isHairpin: t.tightestGrade == "HP")
-            finalNotes.append("\(prefix)\(turnText)")
+            // The word is appended here rather than only in the voice, so the
+            // written note and the spoken call cannot disagree.
+            let spelled = turnText + CornerTrend.spelling(t.trend)
+            finalNotes.append("\(prefix)\(spelled)")
 
             // Marker at the apex of the turn
             let apexDist = t.startDist + t.length / 2
@@ -440,7 +484,7 @@ public enum PacenoteGenerator {
             let turnNote = Pacenote(grade: t.tightestGrade, direction: t.dir,
                                     startDist: t.startDist, endDist: t.endDist,
                                     length: t.length, isLong: t.isLong, isVeryLong: t.isVeryLong,
-                                    apex: apex, text: turnText)
+                                    apex: apex, text: turnText, trend: t.trend)
             finalTurns.append(turnNote)
         }
 
