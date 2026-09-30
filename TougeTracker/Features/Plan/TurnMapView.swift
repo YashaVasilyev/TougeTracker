@@ -65,6 +65,14 @@ struct TurnMapView: View {
 
     /// What is written on the marker: the severity, or the shape when the
     /// corner is a hairpin or a square, which are not numbers.
+    /// The whole call in words, for a screen reader: "three left tightens".
+    static func spokenCall(for note: Pacenote) -> String {
+        var words = [SeverityStyle.spoken(note.grade)]
+        if let direction = note.direction { words.append(direction == .left ? "left" : "right") }
+        if note.trend.isNoted { words.append(CornerTrend.spelling(note.trend).trimmingCharacters(in: .whitespaces)) }
+        return words.joined(separator: " ")
+    }
+
     /// What is written on a marker: the severity, or the shape when the corner
     /// is a hairpin or a square, which are not numbers.
     static func turnLabel(for note: Pacenote) -> String {
@@ -77,7 +85,9 @@ struct TurnMapView: View {
 
     private func turnMarker(for note: Pacenote, index: Int) -> some View {
         GradeMarker(text: TurnMapView.turnLabel(for: note), grade: note.grade,
-                    isSelected: selected == index)
+                    isSelected: selected == index,
+                    spokenLabel: TurnMapView.spokenCall(for: note),
+                    metresIn: note.startDist)
     }
 
     // MARK: - List
@@ -151,6 +161,12 @@ struct GradeMarker: View {
     let text: String
     let grade: String
     var isSelected: Bool = false
+    /// What VoiceOver says, where a screen reader would otherwise announce a
+    /// digit and a colour and neither of which means anything.
+    var spokenLabel: String?
+    /// How far into the road this corner is, so "three left" is not just a
+    /// severity but somewhere on the drive.
+    var metresIn: Double?
 
     var body: some View {
         Text(text)
@@ -160,10 +176,33 @@ struct GradeMarker: View {
             .background(SeverityStyle.color(for: grade), in: Circle())
             .overlay(Circle().strokeBorder(.white, lineWidth: isSelected ? 3 : 1.5))
             .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(spokenLabel ?? SeverityStyle.spoken(grade))
+            .accessibilityValue(metresIn.map { "\(Int($0)) metres in" } ?? "")
     }
 }
 
 enum SeverityStyle {
+    /// How a grade is spoken, for anything a person has to hear rather than read.
+    ///
+    /// A marker is a colour and a digit, and neither survives VoiceOver: the
+    /// colour is invisible and "1" is announced as "one" at best. This spells
+    /// out the words a co-driver would use.
+    static func spoken(_ grade: String) -> String {
+        switch grade {
+        case "HP": return "hairpin"
+        case "Square": return "square"
+        case "Flat": return "flat"
+        case "1": return "one"
+        case "2": return "two"
+        case "3": return "three"
+        case "4": return "four"
+        case "5": return "five"
+        case "6": return "six"
+        default: return grade
+        }
+    }
+
     static func color(for grade: String) -> Color {
         switch grade {
         case "HP": return Color(red: 0.62, green: 0.11, blue: 0.20)

@@ -5,9 +5,51 @@ import CoreLocation
 /// This replaces the remote Tougefinder API client.
 public final class LocalRoadSource: @unchecked Sendable {
     public static let shared = LocalRoadSource()
-    private init() {}
+    public init() {}
 
     private let decoder = JSONDecoder()
+
+    /// Decoded tiles, most recently used last.
+    ///
+    /// A tile costs a read from the bundle, an inflate and a JSON decode, and the
+    /// map asks for every tile in view on every camera settle. Without this,
+    /// panning back over ground already seen paid all three again — the debounce
+    /// upstream throttles the rate but does not make the work free.
+    ///
+    /// A tile is a few hundred kilobytes decoded, so a hundred of them is the
+    /// whole point of the limit: enough to cover any pan a user makes, little
+    /// enough to stay inside a phone's memory on a long session.
+    private let cacheLimit = 96
+    private var cache: [String: [TougeRoad]] = [:]
+    private var cacheOrder: [String] = []
+    private let cacheLock = NSLock()
+
+    private func cached(_ key: String) -> [TougeRoad]? {
+        cacheLock.lock(); defer { cacheLock.unlock() }
+        guard let roads = cache[key] else { return nil }
+        // Touch, so the limit evicts what has been unused longest rather than
+        // what was loaded first.
+        if let at = cacheOrder.firstIndex(of: key) { cacheOrder.remove(at: at) }
+        cacheOrder.append(key)
+        return roads
+    }
+
+    private func store(_ key: String, _ roads: [TougeRoad]) {
+        cacheLock.lock(); defer { cacheLock.unlock() }
+        if cache[key] == nil { cacheOrder.append(key) }
+        cache[key] = roads
+        while cacheOrder.count > cacheLimit {
+            let oldest = cacheOrder.removeFirst()
+            cache[oldest] = nil
+        }
+    }
+
+    /// Empties the cache. Exposed for tests, and for a low-memory warning.
+    public func clearCache() {
+        cacheLock.lock(); defer { cacheLock.unlock() }
+        cache.removeAll()
+        cacheOrder.removeAll()
+    }
 
     private func tileKey(lat: Double, lon: Double) -> String {
         let tileSize: Double = 0.25
@@ -46,6 +88,13 @@ public final class LocalRoadSource: @unchecked Sendable {
     /// build made straight from the source tiles, or a test fixture, works
     /// unchanged.
     private func loadTile(key: String) async throws -> [TougeRoad] {
+        if let hit = cached(key) { return hit }
+        let roads = try await decodeTile(key: key)
+        store(key, roads)
+        return roads
+    }
+
+    private func decodeTile(key: String) async throws -> [TougeRoad] {
         // The name and extension are split because `withExtension: "json.gz"`
         // does not match a file whose name ends ".json.gz" — it looks for a
         // literal extension of that whole string, finds nothing, and the map

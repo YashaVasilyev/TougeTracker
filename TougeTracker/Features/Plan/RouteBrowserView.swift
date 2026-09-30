@@ -915,13 +915,9 @@ struct RouteBrowserView: View {
         return min(max(spanKm * 1000 * fraction, 15), segment ? 200 : 400)
     }
 
-    // MARK: - Styling
-
-    private func scoreColor(_ score: Int) -> Color {
-        if score >= 80 { return Color(red: 0.929, green: 0.239, blue: 0.196) }
-        if score >= 50 { return Color(red: 1.0, green: 0.757, blue: 0.031) }
-        return Color(red: 0.275, green: 0.651, blue: 0.196)
-    }
+    // The score colour ramp lives in `ScoreStyle`, shared with the preview
+    // card. It was duplicated here as a private `scoreColor` that nothing
+    // called, so a change to the ramp would have moved one and not the other.
 }
 
 private struct RouteMarkerView: View {

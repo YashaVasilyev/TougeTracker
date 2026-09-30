@@ -1,0 +1,31 @@
+name: CI
+
+# The road tiles and the voice pack are not tracked, so the tests that need them
+# are the ones this has to prove. Everything else runs anywhere.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+
+      - name: Check the simulator and the voice pack parse alike
+        # Silent failure otherwise: the simulator stops sounding like the app
+        # and nothing says so.
+        run: ./scripts/voicepack-parity.py
+
+      - name: Generate the Xcode project
+        run: xcodegen generate
+
+      - name: Test
+        run: |
+          xcodebuild -project TougeTracker.xcodeproj -scheme TougeTracker \
+            -destination 'platform=iOS Simulator,name=iPhone 16' test

@@ -43,10 +43,31 @@ downloaded from roadcurvature.com and converted locally:
 ```sh
 node scripts/fetch-curvature-tiles.mjs           # all US states, both bands
 node scripts/fetch-curvature-tiles.mjs vermont  # one state, for iteration
+python3 scripts/compile-road-tiles.py           # -> Resources/road-tiles
 ```
 
-Without the tiles the app builds but shows no roads on the map, and
-`LocalRoadSourceTests` fails.
+The second step is not optional and is easy to miss: `xcodegen` enumerates
+resources when it generates the project, so the compiled tiles must exist *before*
+`xcodegen generate`, or the build has no road data in it at all. The source tiles
+are 166MB of JSON at full precision; the compiled ones are rounded to 1m and
+deflate-compressed, which is what the app actually ships — about 43MB.
+
+Without the tiles the app builds, shows an empty map, and `LocalRoadSourceTests`
+fails.
+
+The co-driver voice pack is also not committed, being third-party audio. Drop the
+folder in and compile it:
+
+```sh
+# voice-packs/PhillMills/*.wav, then:
+./scripts/compile-voice-pack.sh                  # 1.8MB, every clip
+./scripts/compile-voice-pack.sh --only-used      # 524KB, only what the app says
+```
+
+Only 57 of the pack's 176 clips are reachable today — the rest is terrain and
+warning vocabulary that needs elevation, which needs 3DEP. The default keeps
+them so that wiring 3DEP up later is not first an exercise in finding
+recordings that were thrown away.
 
 Then build, test, or run on a simulator:
 

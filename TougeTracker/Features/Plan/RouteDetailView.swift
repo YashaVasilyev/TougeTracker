@@ -26,10 +26,19 @@ struct RouteDetailView: View {
         PacenoteGenerator.renderedList(pacenotes, format: settings.pacenoteFormat)
     }
 
+    /// The whole pacenote run as one line, for the road that has no turns.
+    ///
+    /// Computed alongside the turns rather than in `body`: generating walks
+    /// every coordinate of the road — smoothing, resampling, the whole pipeline
+    /// — and a computed property would repeat that on every redraw, for a
+    /// string used only when there are no turns to show.
+    private let emptyRunText: String
+
     init(road: TougeRoad) {
         _road = State(initialValue: road)
         let preview = PacenoteGenerator.generate(road.geoPoints)
         _pacenotes = State(wrappedValue: preview.turns)
+        emptyRunText = preview.text
     }
 
     /// Flips the route end to end and rebuilds its notes.
@@ -68,7 +77,7 @@ struct RouteDetailView: View {
                     }
                     Section("Pacenotes (\(pacenotes.count))") {
                         if pacenotes.isEmpty {
-                            Text(PacenoteGenerator.generate(road.geoPoints).text)
+                            Text(emptyRunText)
                                 .font(.system(.footnote, design: .monospaced)).textSelection(.enabled)
                         } else {
                             VStack(alignment: .leading, spacing: 4) {
@@ -161,7 +170,8 @@ struct RouteDetailView: View {
                     Annotation(TurnMapView.turnLabel(for: note),
                                coordinate: note.apex.clLocation) {
                         GradeMarker(text: TurnMapView.turnLabel(for: note),
-                                    grade: note.grade)
+                                    grade: note.grade,
+                                    spokenLabel: TurnMapView.spokenCall(for: note))
                     }
                 }
             }
