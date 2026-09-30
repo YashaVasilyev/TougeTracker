@@ -41,28 +41,36 @@ public final class LocationReader: NSObject, ObservableObject {
 }
 
 extension LocationReader: CLLocationManagerDelegate {
-    public func locationManager(_ manager: CLLocationManager,
-                                didUpdateLocations locations: [CLLocation]) {
-        coordinate = locations.last?.coordinate
-        if let loc = locations.last, let cont = pending {
-            pending = nil
-            cont.resume(returning: loc)
+    // The manager delivers on the main queue, so `assumeIsolated` is a
+    // statement of fact rather than a hop. Resuming a continuation has to be
+    // ordered with the delegate call that resumed it, which a Task would not
+    // guarantee.
+    nonisolated public func locationManager(_ manager: CLLocationManager,
+                                           didUpdateLocations locations: [CLLocation]) {
+        guard let loc = locations.last else { return }
+        MainActor.assumeIsolated {
+            coordinate = loc.coordinate
+            if let cont = pending {
+                pending = nil
+                cont.resume(returning: loc)
+            }
         }
     }
 
-    public func locationManager(_ manager: CLLocationManager,
-                                didFailWithError error: Error) {
-        if let cont = pending {
-            pending = nil
-            cont.resume(throwing: error)
+    nonisolated public func locationManager(_ manager: CLLocationManager,
+                                           didFailWithError error: Error) {
+        MainActor.assumeIsolated {
+            if let cont = pending {
+                pending = nil
+                cont.resume(throwing: error)
+            }
         }
     }
 
-    public func locationManager(_ manager: CLLocationManager,
-                                didChangeAuthorization status: CLAuthorizationStatus) {
-        authorization = status
-        if status == .authorizedWhenInUse || status == .authorizedAlways {
-            mgr.requestLocation()
-        }
+    nonisolated public func locationManager(_ manager: CLLocationManager,
+                                           didChangeAuthorization status: CLAuthorizationStatus) {
+        let shouldRequest = (status == .authorizedWhenInUse || status == .authorizedAlways)
+        if shouldRequest { manager.requestLocation() }
+        MainActor.assumeIsolated { authorization = status }
     }
 }

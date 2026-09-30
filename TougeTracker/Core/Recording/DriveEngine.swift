@@ -240,39 +240,48 @@ public final class DriveEngine: NSObject, CLLocationManagerDelegate {
 
     // MARK: - Location delegate
 
-    public func locationManager(_ manager: CLLocationManager,
-                                didUpdateLocations locations: [CLLocation]) {
+    // CLLocationManager delivers on the queue its manager was created on, which
+    // is the main queue, so the hop below is not a hop in practice. It is written
+    // as `assumeIsolated` rather than `Task { @MainActor in }` on purpose: a Task
+    // can be scheduled late and land after a newer fix, and on a drive recorder
+    // that means the track is out of order.
+    nonisolated public func locationManager(_ manager: CLLocationManager,
+                                           didUpdateLocations locations: [CLLocation]) {
         guard let loc = locations.last else { return }
-        let prev = lastGPS
-        lastGPS = loc
-        latestLocation = loc
-        lastLocation = loc.coordinate
-        locationTick += 1
+        MainActor.assumeIsolated {
+            let prev = lastGPS
+            lastGPS = loc
+            latestLocation = loc
+            lastLocation = loc.coordinate
+            locationTick += 1
 
-        if loc.speed >= 0 {
-            currentSpeedMps = max(0, loc.speed)
-            motion.updateCourse(degrees: loc.course, speed: loc.speed)
-        }
+            if loc.speed >= 0 {
+                currentSpeedMps = max(0, loc.speed)
+                motion.updateCourse(degrees: loc.course, speed: loc.speed)
+            }
 
-        if let p = prev, p.horizontalAccuracy >= 0, p.horizontalAccuracy <= 60,
-           loc.horizontalAccuracy >= 0, loc.horizontalAccuracy <= 60 {
-            accumulatedDist += GeoMath.distanceMeters(GeoPoint.from(p.coordinate),
-                                                      GeoPoint.from(loc.coordinate))
-        }
-    }
-
-    public func locationManager(_ manager: CLLocationManager,
-                                didChangeAuthorization status: CLAuthorizationStatus) {
-        locationAuthorized = (status == .authorizedWhenInUse || status == .authorizedAlways)
-        if status == .notDetermined {
-            manager.requestWhenInUseAuthorization()
+            // Only accumulate between fixes that are actually usable: an
+            // accuracy of -1 means invalid and a jump of kilometres otherwise.
+            if let p = prev, p.horizontalAccuracy >= 0, p.horizontalAccuracy <= 60,
+               loc.horizontalAccuracy >= 0, loc.horizontalAccuracy <= 60 {
+                accumulatedDist += GeoMath.distanceMeters(GeoPoint.from(p.coordinate),
+                                                          GeoPoint.from(loc.coordinate))
+            }
         }
     }
 
-    public func locationManager(_ manager: CLLocationManager,
-                                didFailWithError error: any Error) {
+    nonisolated public func locationManager(_ manager: CLLocationManager,
+                                           didChangeAuthorization status: CLAuthorizationStatus) {
+        let authorized = (status == .authorizedWhenInUse || status == .authorizedAlways)
+        if status == .notDetermined { manager.requestWhenInUseAuthorization() }
+        MainActor.assumeIsolated { locationAuthorized = authorized }
+    }
+
+    nonisolated public func locationManager(_ manager: CLLocationManager,
+                                           didFailWithError error: any Error) {
         if (error as? CLError)?.code == .locationUnknown { return }
-        toast = error.localizedDescription
+        let message = error.localizedDescription
+        MainActor.assumeIsolated { toast = message }
     }
 
     // MARK: - Co-driver

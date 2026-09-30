@@ -120,6 +120,15 @@ public final class RoutePlanner: @unchecked Sendable {
     /// and awaits it once the end point is chosen, so the name request overlaps
     /// the user's second tap rather than delaying it.
     private var nameTasks: [String: Task<String?, Never>] = [:]
+    private var nameTaskOrder: [String] = []
+
+    /// Cached road-name lookups, one per distinct tapped coordinate.
+    ///
+    /// A session can tap a lot of coordinates and the cache was never trimmed,
+    /// so it grew for as long as the app was open. The planner is reused for
+    /// the whole session and coordinates are not revisited, so evicting the
+    /// oldest costs nothing and bounds the memory.
+    private static let nameCacheLimit = 50
     private let nameLock = NSLock()
 
     private func nameTask(_ coordinate: CLLocationCoordinate2D) -> Task<String?, Never>? {
@@ -130,6 +139,14 @@ public final class RoutePlanner: @unchecked Sendable {
             await self?.lookupRoadName(near: coordinate)
         }
         nameTasks[key] = task
+        nameTaskOrder.append(key)
+        if nameTaskOrder.count > Self.nameCacheLimit {
+            for stale in nameTaskOrder.prefix(nameTaskOrder.count - Self.nameCacheLimit) {
+                nameTasks[stale]?.cancel()
+                nameTasks[stale] = nil
+            }
+            nameTaskOrder.removeFirst(nameTaskOrder.count - Self.nameCacheLimit)
+        }
         return task
     }
 

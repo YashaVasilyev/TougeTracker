@@ -94,7 +94,10 @@ struct RouteBrowserView: View {
                     }
                 }
                 .overlay(alignment: .top) {
-                    topOverlay
+                    VStack(spacing: 8) {
+                        storeErrorBanner
+                        topOverlay
+                    }
                 }
                 .overlay(alignment: .bottom) {
                     VStack(spacing: 10) {
@@ -227,6 +230,24 @@ struct RouteBrowserView: View {
     private func lineWidth(for road: TougeRoad) -> CGFloat {
         (selectedRoad?.id == road.id) ? 6 : 3
     }
+    /// Banner shown when the store failed to read. Without it the map simply
+    /// comes back with no saved routes on it and no other sign of trouble.
+    @ViewBuilder
+    private var storeErrorBanner: some View {
+        if let error = store.lastError {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                Text(error).font(.caption)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(.white)
+            .padding(10)
+            .background(.red.opacity(0.9), in: RoundedRectangle(cornerRadius: 10))
+            .padding(.horizontal)
+            .accessibilityLabel("Storage error: \(error)")
+        }
+    }
+
 
     @MapContentBuilder
     private var savedRouteAnnotations: some MapContent {

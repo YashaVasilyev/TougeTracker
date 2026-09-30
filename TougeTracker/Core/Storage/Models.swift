@@ -106,7 +106,17 @@ public final class SavedRoute: Identifiable {
 
     public var coordinates: [GeoPoint] { CoordinateCodec.unpack(coordinatesData) }
     public var pacenotes: [Pacenote] {
+        // A decode failure used to read as "this route has no notes", which is
+        // indistinguishable from a route that genuinely has none. Flagged so a
+        // caller can tell the two apart.
         (try? JSONDecoder().decode([Pacenote].self, from: pacenotesData)) ?? []
+    }
+
+    /// True when notes were stored but cannot be read back — corruption, or a
+    /// model change between versions.
+    public var pacenotesUnreadable: Bool {
+        pacenotesData.isEmpty == false
+            && (try? JSONDecoder().decode([Pacenote].self, from: pacenotesData)) == nil
     }
 
     /// Rebuilds the `TougeRoad` this route was saved from.
@@ -205,16 +215,33 @@ public final class RouteStore {
         context.autosaveEnabled = true
     }
 
+    /// Set when a read or write failed, cleared when the next one succeeds.
+    ///
+    /// A failed fetch used to return `[]`, which is exactly what "you have never
+    /// saved anything" looks like — so a corrupt store, a failed migration or a
+    /// full disk showed the user an empty list and said nothing. The list is
+    /// still empty; this is how the UI can say why.
+    public private(set) var lastError: String?
+
     public func routes() -> [SavedRoute] {
-        (try? context.fetch(FetchDescriptor<SavedRoute>(
-            sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
-        ))) ?? []
+        fetch(FetchDescriptor<SavedRoute>(
+            sortBy: [SortDescriptor(\.createdAt, order: .reverse)]))
     }
 
     public func drives() -> [Drive] {
-        (try? context.fetch(FetchDescriptor<Drive>(
-            sortBy: [SortDescriptor(\.startedAt, order: .reverse)]
-        ))) ?? []
+        fetch(FetchDescriptor<Drive>(
+            sortBy: [SortDescriptor(\.startedAt, order: .reverse)]))
+    }
+
+    private func fetch<T>(_ descriptor: FetchDescriptor<T>) -> [T] {
+        do {
+            let result = try context.fetch(descriptor)
+            lastError = nil
+            return result
+        } catch {
+            lastError = "Could not read saved data: \(error.localizedDescription)"
+            return []
+        }
     }
 
     public func isSaved(id: Int64) -> Bool {

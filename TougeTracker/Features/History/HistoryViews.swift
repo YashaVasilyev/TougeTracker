@@ -20,6 +20,17 @@ struct HistoryListView: View {
             .navigationDestination(for: Drive.self) { drive in
                 DriveDetailView(drive: drive)
             }
+            // An empty list is what a failed read looks like, so say so rather
+            // than letting a corrupt store read as "you have never driven".
+            .overlay {
+                if store.drives().isEmpty, let error = store.lastError {
+                    ContentUnavailableView {
+                        Label("Could not load drives", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(error)
+                    }
+                }
+            }
         }
     }
 }
