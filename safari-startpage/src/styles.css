@@ -1,0 +1,658 @@
+:root {
+  --bg1: #1c1c1e;
+  --bg2: #2c2c2e;
+  --card: rgba(255, 255, 255, 0.08);
+  --card-hover: rgba(255, 255, 255, 0.14);
+  --text: #f5f5f7;
+  --dim: rgba(235, 235, 245, 0.6);
+  --accent: #0a84ff;
+  --up: #30d158;
+  --down: #ff453a;
+  --radius: 18px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg1: #f2f2f7;
+    --bg2: #dcdce4;
+    --card: rgba(255, 255, 255, 0.65);
+    --card-hover: rgba(255, 255, 255, 0.85);
+    --text: #1c1c1e;
+    --dim: rgba(60, 60, 67, 0.6);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+  color: var(--text);
+  background: var(--bg1);
+  -webkit-font-smoothing: antialiased;
+}
+
+.app {
+  min-height: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 8vh 24px 48px;
+  background: radial-gradient(1200px 600px at 20% -10%, var(--bg2), var(--bg1) 60%);
+}
+
+.inner {
+  width: 100%;
+  max-width: 860px;
+}
+.dim {
+  color: var(--dim);
+}
+
+header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 28px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 40px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+
+.hello p {
+  margin: 6px 0 0;
+  font-size: 15px;
+}
+
+.gear,
+.link {
+  background: none;
+  border: none;
+  color: var(--dim);
+  font-size: 20px;
+  cursor: pointer;
+  padding: 6px 8px;
+  border-radius: 10px;
+}
+
+.gear:hover,
+.link:hover {
+  color: var(--text);
+  background: var(--card);
+}
+
+.link {
+  font-size: 15px;
+  text-decoration: underline;
+}
+
+
+.search-wrap {
+  position: relative;
+}
+
+.suggestions {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  background: var(--card-hover);
+  border: 1px solid rgba(128, 128, 128, 0.25);
+  border-radius: 14px;
+  backdrop-filter: blur(24px);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
+  max-height: 340px;
+  overflow-y: auto;
+  animation: dropIn 0.12s ease-out;
+}
+
+@keyframes dropIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.suggestions li {
+  margin: 0;
+}
+
+.suggestions button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text);
+  font-size: 15px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.suggestions button.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.suggestions button.active .s-kind,
+.suggestions button.active .s-icon {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.s-icon {
+  width: 18px;
+  text-align: center;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
+.s-kind {
+  font-size: 11.5px;
+  flex-shrink: 0;
+}
+
+.s-url {
+  display: block;
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Holds the title with an optional URL beneath it. */
+.s-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-icon.k-bookmark {
+  color: #ffd60a;
+  opacity: 1;
+}
+
+.search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 12px 12px 16px;
+  border-radius: 14px;
+  background: var(--card);
+  border: 1px solid transparent;
+  backdrop-filter: blur(20px);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.search:focus-within {
+  border-color: var(--accent);
+  background: var(--card-hover);
+}
+
+.search .mag {
+  font-size: 16px;
+  opacity: 0.7;
+}
+
+/* The field stacks the real input over a ghost layer that renders the inline
+   completion, so the two must share identical text metrics and padding. */
+.field {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+/* The ghost is positioned and comes after the input in the DOM, so it paints on
+   top. Only the completion tail is painted: the leading span is transparent so
+   the real input text shows through underneath. Keeping the leading characters
+   in the flow is what aligns the tail with the caret. */
+.ghost {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  font-family: inherit;
+  font-size: 17px;
+  line-height: 20px;
+  letter-spacing: normal;
+  white-space: pre;
+  pointer-events: none;
+  color: transparent;
+}
+
+.ghost-tail {
+  color: var(--dim);
+  opacity: 0.9;
+}
+
+/* The input must explicitly inherit the app font. Form controls default to
+   Arial, so without this the ghost layer (which inherits body) renders in a
+   different face and width, and the inline completion is invisible. */
+.search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 17px;
+  line-height: 20px;
+  letter-spacing: normal;
+  padding: 6px 0;
+}
+
+.search input::placeholder {
+  color: var(--dim);
+}
+
+.search .clear,
+.search .go {
+  border: none;
+  cursor: pointer;
+  border-radius: 10px;
+  padding: 8px 14px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.search .clear {
+  background: transparent;
+  color: var(--dim);
+}
+
+.search .go {
+  background: var(--accent);
+  color: #fff;
+}
+
+.hint {
+  font-size: 12.5px;
+  margin: 10px 4px 30px;
+}
+
+kbd {
+  background: var(--card);
+  border-radius: 6px;
+  padding: 2px 6px;
+  font-family: inherit;
+  font-size: 11.5px;
+  border: 1px solid rgba(128, 128, 128, 0.25);
+}
+
+/* Weather sits on its own full-width row; Markets and the chart share the row
+   below, matching Bonjourr's layout. */
+.grid {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.grid-row {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) 1.9fr;
+  gap: 16px;
+  align-items: stretch;
+}
+
+@media (max-width: 860px) {
+  .grid-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.weather-main {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.weather-icon {
+  font-size: 34px;
+  line-height: 1;
+}
+
+.weather-temp {
+  font-size: 44px;
+  font-weight: 600;
+  letter-spacing: -1px;
+  line-height: 1.05;
+}
+
+.weather-desc {
+  color: var(--dim);
+  font-size: 15px;
+}
+
+.weather-meta {
+  display: flex;
+  gap: 26px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+
+.weather-meta div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 15px;
+}
+
+.label {
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--dim);
+}
+
+.forecast {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(128, 128, 128, 0.22);
+  text-align: center;
+}
+
+.f-label {
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.f-icon {
+  font-size: 20px;
+  margin: 4px 0;
+}
+
+.f-range {
+  font-size: 14px;
+}
+
+.f-desc {
+  font-size: 11px;
+}
+
+.stocks ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.stocks li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 9px 0;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.16);
+  font-size: 14px;
+}
+
+.stocks li:last-child {
+  border-bottom: none;
+}
+
+.sym {
+  display: flex;
+  flex-direction: column;
+}
+
+.name {
+  font-size: 11.5px;
+}
+
+.quote {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  font-variant-numeric: tabular-nums;
+}
+
+.up {
+  color: var(--up);
+  font-size: 12px;
+}
+
+.down {
+  color: var(--down);
+  font-size: 12px;
+}
+
+.foot {
+  font-size: 11px;
+  margin-top: 10px;
+}
+
+.settings {
+  margin-top: 22px;
+  background: var(--card);
+  border-radius: var(--radius);
+  padding: 18px;
+  backdrop-filter: blur(20px);
+}
+
+.settings .row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.settings input[type='text'],
+.settings input:not([type]),
+.settings select {
+  flex: 1;
+  min-width: 140px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: var(--bg1);
+  color: var(--text);
+  font-size: 14px;
+}
+
+.settings input:focus,
+.settings select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.settings button {
+  border: none;
+  border-radius: 10px;
+  padding: 9px 14px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.settings .check {
+  color: var(--dim);
+  font-size: 14px;
+}
+
+.card {
+  background: var(--card);
+  border-radius: var(--radius);
+  padding: 18px;
+  backdrop-filter: blur(20px);
+}
+
+.card-title {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+  margin-bottom: 10px;
+}
+
+.skeleton {
+  color: var(--dim);
+  font-size: 14px;
+}
+
+/* The weather card is one horizontal band: current conditions on the left, the
+   four-day forecast running along the right. */
+.weather {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  gap: 28px;
+  padding: 14px 20px;
+}
+
+.weather .forecast {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(56px, 1fr));
+  gap: 10px;
+  margin-top: 0;
+  padding-top: 0;
+  padding-left: 24px;
+  border-top: none;
+  border-left: 1px solid rgba(128, 128, 128, 0.22);
+  text-align: center;
+}
+
+.weather .weather-meta {
+  margin-top: 0;
+  gap: 22px;
+}
+
+.weather .weather-temp {
+  font-size: 34px;
+}
+
+@media (max-width: 720px) {
+  .weather {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .weather .forecast {
+    padding-left: 0;
+    border-left: none;
+    padding-top: 14px;
+    border-top: 1px solid rgba(128, 128, 128, 0.22);
+  }
+}
+
+/* ---- Dow chart ---- */
+
+.chart {
+  display: flex;
+  flex-direction: column;
+  min-width: 0; /* lets the SVG shrink inside the grid track */
+  padding: 16px 18px 14px;
+}
+
+.chart-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.chart-head .card-title {
+  margin-bottom: 2px;
+}
+
+.chart-price {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: -2px 0 4px;
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.chart-price .up,
+.chart-price .down {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.chart-range {
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+  padding-top: 2px;
+  flex-shrink: 0;
+}
+
+/* Stretching the viewBox means every stroke has to opt out of the scale,
+   otherwise the line and gridlines thicken as the card widens. */
+.chart-svg {
+  width: 100%;
+  height: 240px;
+  display: block;
+  overflow: visible;
+}
+
+.chart-grid {
+  stroke: rgba(128, 128, 128, 0.22);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-prev {
+  stroke: rgba(128, 128, 128, 0.5);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-line {
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+/* Counteract the viewBox stretch so the endpoint stays a circle, not an oval. */
+.chart-dot {
+  vector-effect: non-scaling-stroke;
+  stroke: var(--card);
+  stroke-width: 8;
+}
+
+.chart-axis {
+  fill: var(--dim);
+  font-size: 11px;
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+}

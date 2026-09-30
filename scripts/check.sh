@@ -7,6 +7,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Cheap, and the failure it catches is silent: an app built without the road
+# tiles has an empty map, which no test notices.
+echo "== road tiles =="
+./scripts/ensure-road-tiles.sh
+echo "   present"
+
+echo
 echo "== voice pack parity =="
 ./scripts/voicepack-parity.py
 

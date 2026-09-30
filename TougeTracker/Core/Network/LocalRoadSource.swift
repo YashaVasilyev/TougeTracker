@@ -99,14 +99,27 @@ public final class LocalRoadSource: @unchecked Sendable {
         // does not match a file whose name ends ".json.gz" — it looks for a
         // literal extension of that whole string, finds nothing, and the map
         // silently comes up empty.
+        let roads: [TougeRoad]
         if let url = Bundle.main.url(forResource: key + ".json", withExtension: "z"),
            let decompressed = Self.inflate(try Data(contentsOf: url)) {
-            return try decoder.decode([TougeRoad].self, from: decompressed)
-        }
-        guard let url = Bundle.main.url(forResource: key, withExtension: "json") else {
+            roads = try decoder.decode([TougeRoad].self, from: decompressed)
+        } else if let url = Bundle.main.url(forResource: key, withExtension: "json") {
+            // The uncompressed source tiles. Not reachable in a shipping build:
+            // Resources/tiles is excluded from the bundle, so a build made
+            // without the compiled ones has no tiles at all and now fails
+            // rather than reaching here. This branch is for the test fixtures
+            // and for anyone bundling the raw tiles deliberately.
+            roads = try decoder.decode([TougeRoad].self, from: Data(contentsOf: url))
+        } else {
+            // A tile with no roads is normal — the grid covers ocean and
+            // countries nobody drives in. Counting these is the only thing that
+            // distinguishes "nothing here" from "this build has no road data at
+            // all", which otherwise look identical: an empty map, silently.
+            Self.countRequest(missing: true)
             return []
         }
-        return try decoder.decode([TougeRoad].self, from: Data(contentsOf: url))
+        Self.countRequest(missing: false)
+        return roads
     }
 
     /// Inflates a deflate-compressed tile, or returns nil if it is not one.
@@ -114,6 +127,32 @@ public final class LocalRoadSource: @unchecked Sendable {
     /// Tiles are read lazily as the map pans, so this sits on the path to every
     /// tile. A corrupt or truncated file returns nil and the caller falls back,
     /// rather than throwing and blanking the map.
+    private static let countLock = NSLock()
+    private static var missingTiles = 0
+    private static var requestedTiles = 0
+
+    /// How many tiles have been asked for and not found in the bundle.
+    public static var missingTileCount: Int {
+        countLock.lock(); defer { countLock.unlock() }
+        return missingTiles
+    }
+
+    /// True when the bundle appears to have no road data in it.
+    ///
+    /// Deliberately not triggered by a single miss: the grid covers ocean and
+    /// countries nobody drives in, so misses are normal. It needs a real sample
+    /// behind it, and every single one being a miss.
+    public static var roadDataLooksAbsent: Bool {
+        countLock.lock(); defer { countLock.unlock() }
+        return requestedTiles >= 200 && missingTiles == requestedTiles
+    }
+
+    private static func countRequest(missing: Bool) {
+        countLock.lock(); defer { countLock.unlock() }
+        requestedTiles += 1
+        if missing { missingTiles += 1 }
+    }
+
     private static func inflate(_ data: Data) -> Data? {
         // No magic-byte check: the format is bare deflate, so there is no
         // header to recognise, and guessing one already cost a build. Try to

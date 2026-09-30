@@ -234,6 +234,19 @@ struct RouteBrowserView: View {
     /// comes back with no saved routes on it and no other sign of trouble.
     @ViewBuilder
     private var storeErrorBanner: some View {
+        if LocalRoadSource.roadDataLooksAbsent {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "map.fill")
+                Text("No road data in this build. The curvature tiles are missing from the bundle — run scripts/ensure-road-tiles.sh and rebuild.")
+                    .font(.caption)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(.white)
+            .padding(10)
+            .background(.orange.opacity(0.95), in: RoundedRectangle(cornerRadius: 10))
+            .padding(.horizontal)
+            .accessibilityLabel("No road data in this build")
+        }
         if let error = store.lastError {
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: "exclamationmark.triangle.fill")

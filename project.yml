@@ -21,6 +21,14 @@ targets:
           - "Resources/tiles"
     resources:
       - TougeTracker/Resources/road-tiles
+    # Compiles the road tiles if they have not been compiled yet, and fails the
+    # build if there is nothing to compile. Without this, building without
+    # running scripts/compile-road-tiles.py first produced an app whose map was
+    # silently empty, and the tests still passed.
+    preBuildScripts:
+      - name: Ensure road tiles
+        path: scripts/ensure-road-tiles.sh
+        basedOnDependencyAnalysis: false
     info:
       path: TougeTracker/Info.plist
       properties:

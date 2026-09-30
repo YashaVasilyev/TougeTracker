@@ -90,6 +90,36 @@ final class TougeRoadDecodingTests: XCTestCase {
         return (RouteStore(container: container), container)
     }
 
+    /// Notes that cannot be decoded must be distinguishable from a route that
+    /// genuinely has no notes — both used to read as an empty array.
+    @MainActor
+    func testUnreadablePacenotesAreFlagged() throws {
+        let (store, _) = try makeStore(inMemory: true)
+        let road = try decode(road(idJSON: "12345"))
+        let route = store.saveRoute(road)
+        // The fixture road is two points, so it legitimately has no corners.
+        // What matters is that a readable (if empty) blob is not flagged.
+        XCTAssertFalse(route.pacenotesUnreadable, "freshly saved notes must be readable")
+
+        // Corrupt the stored blob the way a schema change or bad write would.
+        route.pacenotesData = Data([0x00, 0x01, 0x02])
+        XCTAssertTrue(route.pacenotesUnreadable, "garbage in the note blob must be flagged")
+        XCTAssertFalse(route.pacenotesData.isEmpty, "the blob is present, just unreadable")
+        XCTAssertTrue(route.pacenotes.isEmpty, "and still yield no notes rather than crashing")
+    }
+
+    /// A successful read clears the recorded error, so a store that recovers
+    /// does not keep showing a stale failure.
+    @MainActor
+    func testSuccessfulReadClearsLastError() throws {
+        let (store, _) = try makeStore(inMemory: true)
+        XCTAssertNil(store.lastError, "a clean read must not report an error")
+        _ = store.drives()
+        XCTAssertNil(store.lastError)
+        _ = store.routes()
+        XCTAssertNil(store.lastError)
+    }
+
     /// A route saved from a string-id road must still be found after the store
     /// is reopened, since `SavedRoute.id` is a unique persisted key.
     @MainActor
