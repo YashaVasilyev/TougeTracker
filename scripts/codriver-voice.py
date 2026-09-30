@@ -74,18 +74,21 @@ class Pack:
         return os.path.join(self.dir, f"Dist{nearest}.wav")
 
 
-    def clips_for(self, connector, grade, direction, modifier):
+    def clips_for(self, connector, grade, direction, modifier, trend):
         """The clips for one pacenote, in the order they are spoken.
 
         Takes the same arguments, in the same order, that `parse_item` returns.
         """
         tail = self.modifier_clips(modifier)
+        # Said after the corner, and after the length: "three left long tightens".
+        if trend and trend in self.have:
+            tail.append(os.path.join(self.dir, trend + ".wav"))
         if connector == "into":
             clip = self.get(f"Into-{direction}{grade}", f"And-{direction}{grade}")
             if clip:
                 return [clip] + tail
             # No single "into" clip for this severity: say it as one.
-            return [self.get(f"Into-{direction}1"), self.get(f"{direction}{grade}")]
+            return [self.get(f"Into-{direction}1"), self.get(f"{direction}{grade}")] + tail
         if connector == "and":
             clip = self.get(f"And-{direction}{grade}")
             if clip:
@@ -94,28 +97,50 @@ class Pack:
             # clip and the severity plainly: dropping the link would call two
             # corners that sound unrelated. Must stay in step with VoicePack
             # in the app, or a simulated drive does not sound like the real one.
-            return [self.get(f"Into-{direction}1"), self.get(f"{direction}{grade}")]
+            return [self.get(f"Into-{direction}1"), self.get(f"{direction}{grade}")] + tail
         clip = self.get(f"{direction}{grade}")
         if clip:
             return [clip] + tail
-        return [c for c in [self.get(f"{direction}1")] if c]
+        return [c for c in [self.get(f"{direction}1")] if c] + tail
 
     def modifier_clips(self, modifier):
         return [self.get(modifier)] if modifier else []
 
 
 def parse_item(item):
-    """Splits one phrase item into (connector, grade, direction, modifier)."""
+    """Splits one phrase item into (connector, grade, direction, modifier, trend)."""
     connector = None
     for prefix, name in (("into ", "into"), ("followed by ", "and")):
         if item.startswith(prefix):
             connector, item = name, item[len(prefix):]
             break
+    # Trailing words are stripped in the order they appear, not in a fixed
+    # order: "three left long tightens" does not end with " long", so a fixed
+    # order finds neither suffix and the whole note is silently dropped.
+    # Must stay in step with `parse` in TougeTracker/Core/Pacenotes/VoicePack.swift,
+    # or a simulated drive does not sound like the real one.
+    # Stripped by the exact length of the suffix that matched, not by the last
+    # word: " very long" is two words, and removing only the last one turns
+    # "three left very long" into "three left very". The Swift does the same with
+    # removeLast(suffix.count); these two must not drift apart.
     modifier = None
-    for suffix, name in ((" very long", "VeryLong"), (" long", "Long")):
-        if item.endswith(suffix):
-            modifier, item = name, item[:-len(suffix)]
-            break
+    trend = None
+    while True:
+        if modifier is None:
+            match = next(((suf, n) for suf, n in ((" very long", "VeryLong"), (" long", "Long"))
+                          if item.endswith(suf)), None)
+            if match:
+                suffix, modifier = match
+                item = item[:-len(suffix)]
+                continue
+        if trend is None:
+            match = next(((suf, n) for suf, n in ((" tightens", "Tightens"), (" opens", "Opens"))
+                          if item.endswith(suf)), None)
+            if match:
+                suffix, trend = match
+                item = item[:-len(suffix)]
+                continue
+        break
     parts = item.split()
     if len(parts) < 2:
         return None
@@ -123,7 +148,7 @@ def parse_item(item):
     grade = GRADES.get(parts[0])
     if not direction or not grade:
         return None
-    return connector, grade, direction, modifier
+    return connector, grade, direction, modifier, trend
 
 
 def clips_for_phrase(pack, phrase):
