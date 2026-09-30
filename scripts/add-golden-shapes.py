@@ -43,32 +43,47 @@ def walk(headings, start=ORIGIN, step=10):
     return out
 
 
+def arc_headings(radius, step, straight_in=20, straight_out=20, total=120):
+    """Headings for a constant-radius arc between two straights.
+
+    The heading has to *accumulate*: a list of the same value repeated is a
+    straight line, not an arc. A first version of this built the arc that way
+    and the generator correctly called it a straight — the shape, not the
+    ladder, was wrong.
+    """
+    headings = [0.0] * straight_in
+    for i in range(total - straight_in - straight_out):
+        headings.append(headings[-1] + step / radius * 180 / math.pi)
+    headings += [headings[-1]] * straight_out
+    return headings
+
+
 def flat_bend():
     """A real corner, but too open for a 6, which the ladder calls Flat.
 
-    Flat is the band from 150m to 300m of radius, so this has to turn
-    genuinely: 2 degrees over 400m is an 11km radius, which is a straight, not
-    a flat corner. 60 degrees over 250m is about 240m — inside the band.
+    Flat is the 150m-300m band. 350m and above is not a corner at all, and
+    150m and below reads as a 6, so 240m sits in the middle of it.
     """
-    step, total = 10.0, 60.0
-    per_step = math.degrees(step / 240.0)      # 240m radius
-    n = int(250 / step)
-    headings = [0.0] * 20 + [per_step] * n + [per_step] * 20
-    return walk(headings, (42.6, -71.4))
+    return walk(arc_headings(240.0, 10.0), (42.6, -71.4), step=10)
 
 
 def tightening_corner():
     """A corner whose turn rate rises geometrically, so the radius tightens.
 
-    A linearly rising turn rate would not do: radius is the reciprocal of
-    curvature, so the radius would fall as 1/x and log-radius would be concave
-    rather than straight, and the fit rightly rejects it.
+    Radius is the reciprocal of curvature, so a turn rate that merely increases
+    makes the radius fall as 1/x and log-radius comes out concave, which the fit
+    rightly rejects. A road that tightens tightens geometrically, and that is
+    what makes log-radius a straight line.
+
+    The rate is kept in a range where the corner starts around a 4 and ends near
+    a 1: too aggressive and the corner is a hairpin or a grade 1, and a grade 1
+    is not called as tightening because it has nowhere left to go.
     """
     headings = [0.0] * 20
-    for i in range(1, 45):
+    for i in range(1, 60):
         headings.append(headings[-1] + 0.5 * (1.06 ** i))
     headings += [headings[-1]] * 20
-    return walk(headings, (42.4, -71.6))
+    return walk(headings, (42.4, -71.6), step=10)
 
 
 if __name__ == "__main__":

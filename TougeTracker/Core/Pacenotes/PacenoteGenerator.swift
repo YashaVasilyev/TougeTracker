@@ -198,6 +198,15 @@ public enum PacenoteGenerator {
     }
 
     public static func formatted(_ note: Pacenote, format: PacenoteFormat = .rally) -> String {
+        // The trend is part of the note, so anything that renders a note has to
+        // render it. Without this the generated text said "3 R very long
+        // tightens" while the preview card and the detail list — which come
+        // through here — said only "3 R very long".
+        let base = _formatted(note, format: format)
+        return note.isStraight ? base : base + CornerTrend.spelling(note.trend)
+    }
+
+    private static func _formatted(_ note: Pacenote, format: PacenoteFormat) -> String {
         describe(grade: note.grade, dir: note.direction, format: format,
                  isLong: note.isLong, isVeryLong: note.isVeryLong, isHairpin: note.grade == "HP",
                  straightLengthMeters: note.isStraight ? note.length : nil)
