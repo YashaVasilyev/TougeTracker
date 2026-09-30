@@ -91,6 +91,18 @@ public enum CornerTrendDetector {
     ///   - end: metres from the start of the road.
     public static func trend(along coordinates: [GeoPoint],
                              from start: Double, to end: Double) -> CornerTrend {
+        trend(onSmoothed: GeoMath.chaikinSmooth(coordinates, iterations: 2),
+              from: start, to: end)
+    }
+
+    /// The trend for a corner on an already-smoothed road.
+    ///
+    /// The generator smooths the road once and already has the result in hand,
+    /// but the trend pass is called per corner — so smoothing inside meant the
+    /// whole road was smoothed once per turn. The first version of this did
+    /// exactly that.
+    public static func trend(onSmoothed coordinates: [GeoPoint],
+                             from start: Double, to end: Double) -> CornerTrend {
         guard end - start >= minimumLength, coordinates.count > 3 else { return .none }
 
         let samples = radii(along: coordinates, from: start - 10, to: end + 10)
@@ -118,9 +130,8 @@ public enum CornerTrendDetector {
     }
 
     /// Corner radius every `sampleStep` metres, over a stretch of road.
-    private static func radii(along coordinates: [GeoPoint],
+    private static func radii(along smoothed: [GeoPoint],
                                from start: Double, to end: Double) -> [(distance: Double, radius: Double)] {
-        let smoothed = GeoMath.chaikinSmooth(coordinates, iterations: 2)
         let total = GeoMath.lengthMeters(smoothed)
         let from = max(0, start), to = min(total, end)
         guard to > from else { return [] }

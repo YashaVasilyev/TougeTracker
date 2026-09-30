@@ -70,6 +70,10 @@ public final class DriveEngine: NSObject, CLLocationManagerDelegate {
     // MARK: - Lifecycle
 
     public func start(route: RecordedRoute? = nil) {
+        // Starting while already running would leak the old timer: it is only
+        // reachable through `timer`, so the first one would never be
+        // invalidated, and both would tick at 20Hz.
+        if timer != nil { timer?.invalidate(); timer = nil }
         currentRouteID = route?.roadID
         currentRouteName = route?.name
         if let r = route, !r.coordinates.isEmpty {
@@ -315,15 +319,21 @@ public final class DriveEngine: NSObject, CLLocationManagerDelegate {
     private func buildDrive() -> Drive {
         let end = Date()
         let dur = end.timeIntervalSince(driveStart)
-        let maxSpeed = samples.map { Double($0.speed) }.max() ?? 0
-        let maxLat = samples.map { abs(Double($0.lateralG)) }.max() ?? 0
-        let maxFwd = samples.map { max(0, Double($0.forwardG)) }.max() ?? 0
-        let maxBrake = samples.map { max(0, Double(-$0.forwardG)) }.max() ?? 0
+        // One pass, not four. A long drive is tens of thousands of samples and
+        // this ran at the end of every one, building four throwaway arrays to
+        // take four maxima.
+        var maxSpeed = Float(0), maxLat = Float(0), maxFwd = Float(0), maxBrake = Float(0)
+        for s in samples {
+            maxSpeed = max(maxSpeed, s.speed)
+            maxLat = max(maxLat, abs(s.lateralG))
+            maxFwd = max(maxFwd, max(0, s.forwardG))
+            maxBrake = max(maxBrake, max(0, -s.forwardG))
+        }
         return Drive(
             startedAt: driveStart, endedAt: end,
             routeName: currentRouteName, routeID: currentRouteID,
             distanceMeters: accumulatedDist, durationSeconds: dur,
-            maxSpeed: maxSpeed, maxLateralG: maxLat,
-            maxForwardG: maxFwd, maxBrakeG: maxBrake, samples: samples)
+            maxSpeed: Double(maxSpeed), maxLateralG: Double(maxLat),
+            maxForwardG: Double(maxFwd), maxBrakeG: Double(maxBrake), samples: samples)
     }
 }

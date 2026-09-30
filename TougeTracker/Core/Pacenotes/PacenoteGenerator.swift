@@ -378,7 +378,7 @@ public enum PacenoteGenerator {
         for idx in turns.indices {
             guard turns[idx].tightestGrade != "HP",
                   turns[idx].tightestGrade != "1" else { continue }
-            turns[idx].trend = CornerTrendDetector.trend(along: smoothedCoords,
+            turns[idx].trend = CornerTrendDetector.trend(onSmoothed: smoothedCoords,
                                                          from: turns[idx].startDist,
                                                          to: turns[idx].endDist)
         }
