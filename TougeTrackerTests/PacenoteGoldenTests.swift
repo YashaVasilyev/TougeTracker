@@ -249,8 +249,12 @@ final class PacenoteGoldenTests: XCTestCase {
 
     func testFixturesDecode() throws {
         let f = try loadFixtures()
-        XCTAssertEqual(f.count, 16)
+        XCTAssertEqual(f.count, 18)
         XCTAssertTrue(f.contains { $0.name == "syn_hairpin" })
+        // The shapes that reach the newest code paths: a flat corner and a
+        // tightening one. Neither of the older sixteen produces either.
+        XCTAssertTrue(f.contains { $0.name == "syn_flat_bend" })
+        XCTAssertTrue(f.contains { $0.name == "syn_tightening" })
         XCTAssertTrue(f.contains { $0.name == "db_top_descriptive" })
         XCTAssertTrue(f.contains { $0.name == "syn_zigzag_sharp" })
     }
