@@ -11,24 +11,14 @@ struct DriveTabView: View {
             case .finished:
                 if let drive = engine.lastDrive {
                     // `DriveDetailView` is a scroll view with no navigation bar
-                    // of its own, so it gets an explicit way back — otherwise a
-                    // finished drive is a dead end with only the tab bar to
-                    // escape via.
-                    DriveDetailView(drive: drive)
-                        .safeAreaInset(edge: .bottom) {
-                            Button {
-                                engine.dismissLastDrive()
-                            } label: {
-                                Text("Done")
-                                    .font(.headline)
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 6)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .padding(.horizontal)
-                            .padding(.bottom, 6)
-                            .background(.bar)
-                        }
+                    // of its own, so it takes a way out — otherwise a finished
+                    // drive is a dead end with only the tab bar to escape via.
+                    // It only does so when asked: from History the same view is
+                    // pushed onto a stack, where a Done button would be a second
+                    // way to press Back.
+                    DriveDetailView(drive: drive) {
+                        engine.dismissLastDrive()
+                    }
                 } else {
                     DriveSetupView()
                 }
@@ -38,5 +28,6 @@ struct DriveTabView: View {
         }
         // No .ignoresSafeArea(edges: .top) here: the drive HUD's top bar holds
         // the status readout and controls, and must clear the notch.
+        .background(Theme.background)
     }
 }

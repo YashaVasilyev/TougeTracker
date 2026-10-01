@@ -19,12 +19,14 @@ struct DriveHUDView: View {
         ZStack {
             Map(position: $position, interactionModes: .all) {
                 if engine.routeCoordinates.count > 1 {
+                    // The planned line is muted: it is context for the line you
+                    // actually drove, not the thing you are reading.
                     MapPolyline(coordinates: engine.routeCoordinates)
-                        .stroke(Color.blue.opacity(0.5), lineWidth: 3)
+                        .stroke(Theme.textTertiary, lineWidth: 3)
                 }
                 if engine.drivenPath.count > 1 {
                     MapPolyline(coordinates: engine.drivenPath)
-                        .stroke(Color.orange, lineWidth: 3)
+                        .stroke(Theme.accent, lineWidth: 3)
                 }
                 ForEach(engine.pacenoteAnnotations) { marker in
                     Annotation(coordinate: marker.coordinate) {

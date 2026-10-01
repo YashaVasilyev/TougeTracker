@@ -194,7 +194,7 @@ struct RouteDetailView: View {
     /// Split out of `body` because the marker content is enough to push the
     /// whole view past what the type checker will do in reasonable time.
     private var roadMap: some View {
-        Map(initialPosition: .region(fittedRegion(for: road.geoPoints.map { $0.clLocation })),
+        Map(initialPosition: .region(MapFit.region(for: road.geoPoints.map { $0.clLocation })),
             interactionModes: .all) {
             if road.geoPoints.count > 1 {
                 MapPolyline(coordinates: road.geoPoints.map { $0.clLocation })
@@ -216,20 +216,5 @@ struct RouteDetailView: View {
             }
         }
         .mapStyle(.standard)
-    }
-
-    private func fittedRegion(for coords: [CLLocationCoordinate2D]) -> MKCoordinateRegion {
-        guard coords.count > 1 else { return MKCoordinateRegion() }
-        var minLat = coords[0].latitude, maxLat = minLat
-        var minLon = coords[0].longitude, maxLon = minLon
-        for c in coords {
-            minLat = min(minLat, c.latitude); maxLat = max(maxLat, c.latitude)
-            minLon = min(minLon, c.longitude); maxLon = max(maxLon, c.longitude)
-        }
-        let span = max(0.002, max(maxLat - minLat, maxLon - minLon) * 1.2)
-        let lat = (minLat + maxLat) / 2
-        return MKCoordinateRegion(
-            center: CLLocationCoordinate2D(latitude: lat, longitude: (minLon + maxLon) / 2),
-            span: MKCoordinateSpan(latitudeDelta: span, longitudeDelta: span / abs(cos(lat * .pi / 180))))
     }
 }

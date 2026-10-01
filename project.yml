@@ -45,6 +45,12 @@ targets:
         NSMotionUsageDescription: "TougeTracker uses the gyroscope and accelerometer to measure acceleration, braking, and g-forces."
         UIBackgroundModes:
           - location
+        # The app is dark-only. Set here as well as via
+        # `.preferredColorScheme(.dark)`: this key is what darkens the
+        # UIKit-backed chrome (nav bars, sheets, alerts) and anything hosted
+        # outside the SwiftUI scene, and unlike the modifier it cannot be
+        # lost by a view that overrides the environment.
+        UIUserInterfaceStyle: Dark
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.tougetracker.app

@@ -441,7 +441,7 @@ struct RouteBrowserView: View {
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(isSegmentMode ? Color.white : Color.primary)
                 .frame(width: 46, height: 46)
-                .background(isSegmentMode ? AnyShapeStyle(Color.orange) : AnyShapeStyle(.regularMaterial),
+                .background(isSegmentMode ? AnyShapeStyle(Theme.accent) : AnyShapeStyle(.regularMaterial),
                             in: Circle())
                 .overlay(Circle().strokeBorder(Color.black.opacity(0.08), lineWidth: 1))
                 .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
@@ -466,7 +466,7 @@ struct RouteBrowserView: View {
         .padding(.vertical, 10)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .strokeBorder(Color.orange.opacity(0.5), lineWidth: 1))
+            .strokeBorder(Theme.accent.opacity(0.5), lineWidth: 1))
         .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
     }
 
