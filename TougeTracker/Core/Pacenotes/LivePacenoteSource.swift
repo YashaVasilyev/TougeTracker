@@ -18,10 +18,12 @@ import CoreLocation
 /// chaining, the same written text and the same voice. Only the origin of the
 /// geometry differs, which is the whole of what "live" means here.
 ///
-/// What it cannot do is invent a road that is not in the tiles. The tiles carry
-/// ranked touge roads only, so a free drive along a base-map road that nobody
-/// has ranked gets no calls — the source stays idle, tries again as the car
-/// moves, and says nothing rather than guessing.
+/// Where the geometry comes from, in order. The bundled tiles carry ranked touge
+/// roads and are on the phone, free and instant. The router is asked only when
+/// the tiles have nothing — which is every base-map road nobody has ever scored,
+/// the majority of the roads a free drive is actually on. Where neither has
+/// anything, the source stays idle, tries again as the car moves, and says
+/// nothing rather than guessing.
 @MainActor
 public final class LivePacenoteSource {
 
@@ -29,6 +31,17 @@ public final class LivePacenoteSource {
     /// fixtures without the bundle, and so the tile cache stays behind the
     /// production loader.
     public typealias RoadLoader = @Sendable (_ coordinate: CLLocationCoordinate2D) async -> [TougeRoad]
+
+    /// The driving line ahead of the car, fetched from the router for the roads
+    /// the tiles do not carry. Empty means "no line" — no coverage, no signal,
+    /// or the router refused.
+    ///
+    /// It returns `TougeRoad`s rather than loose geometry on purpose: a routed
+    /// line is then handed to exactly the same window code a tile road is, so
+    /// there is no second, slightly different way of turning a road into notes.
+    public typealias LineLoader = @Sendable (_ coordinate: CLLocationCoordinate2D,
+                                             _ courseDegrees: Double,
+                                             _ lookaheadMeters: Double) async -> [TougeRoad]
 
     /// The slice of road the notes are generated from.
     public struct Window: Sendable {
@@ -82,9 +95,35 @@ public final class LivePacenoteSource {
     nonisolated public static let retryMeters: Double = 50
     nonisolated public static let retrySeconds: TimeInterval = 5
 
+    /// How far the car must travel, and how long it must take, before the router
+    /// is asked again for the line ahead.
+    ///
+    /// The router is a public demo server that asks for light use, and this runs
+    /// inside a 20Hz recorder on a phone that may have no signal at all. A
+    /// routed window covers the whole horizon, so it does not need asking for
+    /// often — and the tile path is always tried first, so on a road the tiles
+    /// carry this costs nothing at all.
+    nonisolated public static let networkRetryMeters: Double = 200
+    nonisolated public static let networkRetrySeconds: TimeInterval = 20
+
+    /// The longer wait after the router failed, which usually means there is no
+    /// connection rather than that the road is unroutable. Backing off hard
+    /// keeps a drive through a dead zone from spending its battery on timeouts.
+    nonisolated public static let networkBackoffSeconds: TimeInterval = 60
+
+    /// How far past the window the router is asked to route.
+    ///
+    /// A little beyond, so the line does not stop exactly where the window does
+    /// and leave a truncated polyline at the far end. The window still cuts at
+    /// its own horizon — this only buys a clean ending to route to.
+    nonisolated public static let networkRouteMarginMeters: Double = 150
+
     // MARK: - State
 
     private let loader: RoadLoader
+    /// The fallback for roads the tiles do not carry. Nil means tiles-only, which
+    /// is what the tests use unless they are specifically exercising this.
+    private let lineLoader: LineLoader?
     private let backfillMeters: Double
     private let toleranceMeters: Double
     private var lookaheadMeters: Double
@@ -101,6 +140,13 @@ public final class LivePacenoteSource {
     private var buildScheduled = false
     private var lastAttemptAt: Date?
     private var lastAttemptPoint: GeoPoint?
+    /// When the router was last asked, and from where. Rate-limiting a public
+    /// demo server from inside a drive recorder.
+    private var lastNetworkAt: Date?
+    private var lastNetworkPoint: GeoPoint?
+    /// Set when the router came back empty, which is nearly always a dead zone
+    /// rather than an unroutable road.
+    private var networkFailed = false
     private var windowRoadName: String?
 
     /// Bumped whenever a new window is installed, so the HUD can tell a fresh
@@ -111,27 +157,51 @@ public final class LivePacenoteSource {
     /// road data at all — the one failure a driver needs to hear about, because
     /// otherwise the co-driver is silent and nothing says why.
     public var onRoadDataAbsent: (() -> Void)?
+
+    /// Called once per drive when neither the tiles nor the router can describe
+    /// the road ahead — no scored road nearby and no signal, which is a
+    /// different problem from a build with no road data in it and deserves a
+    /// different word. Said once: a co-driver that repeats itself every rebuild
+    /// is worse than one that stays quiet.
+    public var onRoadUnavailable: (() -> Void)?
+    private var warnedUnavailable = false
 // MARK: - Init
 
-    /// The production source: reads the bundled tile for wherever the car is.
+    /// The production source: reads the bundled tile for wherever the car is,
+    /// and asks the router for the line ahead when the tiles have nothing.
     ///
     /// A tile is one 0.25° square, so a road crossing into the next one is cut
     /// short at the boundary and picked up by the next rebuild — the window is a
     /// few hundred metres behind the car by then, so the seam is never a gap in
     /// the calls.
+    ///
+    /// The router is the same `RoutePlanner` the segment mode already uses, and
+    /// it is what makes an unplanned drive work on a road nobody has ever
+    /// scored: route from where the car is to a point ahead of it along its
+    /// heading, and the driving line that comes back is a road like any other.
     public convenience init(callDistanceScale: Double = 1.0) {
         self.init(loader: { coordinate in
             (try? await LocalRoadSource.shared.fetchRoads(lat: coordinate.latitude,
                                                           lon: coordinate.longitude)) ?? []
+        }, lineLoader: { coordinate, course, lookahead in
+            let ahead = GeoMath.destination(GeoPoint.from(coordinate),
+                                            lookahead + Self.networkRouteMarginMeters,
+                                            course)
+            guard let road = try? await RoutePlanner.shared.road(from: coordinate,
+                                                                   to: ahead.clLocation)
+            else { return [] }
+            return [road]
         }, callDistanceScale: callDistanceScale)
     }
 
     public init(loader: @escaping RoadLoader,
+                lineLoader: LineLoader? = nil,
                 callDistanceScale: Double = 1.0,
                 backfillMeters: Double = LivePacenoteSource.backfillMeters,
                 lookaheadMeters: Double? = nil,
                 toleranceMeters: Double = LivePacenoteSource.toleranceMeters) {
         self.loader = loader
+        self.lineLoader = lineLoader
         self.callDistanceScale = callDistanceScale
         self.backfillMeters = backfillMeters
         self.toleranceMeters = toleranceMeters
@@ -199,18 +269,72 @@ public final class LivePacenoteSource {
         lastAttemptPoint = GeoPoint.from(location.coordinate)
         let roads = await loader(location.coordinate)
 
+        // The tiles first, always. They are on the phone, free, and instant, and
+        // on a scored road this is the whole of the work — no request, no
+        // waiting, no signal needed.
+        if let window = Self.window(at: location.coordinate,
+                                    course: location.course,
+                                    roads: roads,
+                                    backfillMeters: backfillMeters,
+                                    lookaheadMeters: lookaheadMeters,
+                                    toleranceMeters: toleranceMeters,
+                                    alreadyCalled: calledApexes) {
+            return install(window)
+        }
+
+        if roads.isEmpty, LocalRoadSource.roadDataLooksAbsent { onRoadDataAbsent?() }
+        return await buildWindowFromRouter(at: location)
+    }
+
+    /// The fallback: ask the router for the driving line ahead, and window it
+    /// exactly as a tile road would be windowed.
+    ///
+    /// This is what makes an unplanned drive work anywhere OSM has data, not
+    /// just on the roads someone scored and compiled into a tile. It costs a
+    /// network round trip per window, so it is gated hard — and it is only ever
+    /// reached once the tiles have already come up empty, so a drive on a tiled
+    /// road never touches it.
+    private func buildWindowFromRouter(at location: CLLocation) async -> Bool {
+        guard let lineLoader, shouldAskRouter(at: location) else { return false }
+
+        lastNetworkAt = Date()
+        lastNetworkPoint = GeoPoint.from(location.coordinate)
+        let lines = await lineLoader(location.coordinate, location.course, lookaheadMeters)
+        networkFailed = lines.isEmpty
+        if networkFailed, !warnedUnavailable {
+            warnedUnavailable = true
+            onRoadUnavailable?()
+        }
+
+        // Same call, same trimming, same orientation test as the tile path: a
+        // routed line is just a road that happened to arrive over the network.
         guard let window = Self.window(at: location.coordinate,
                                        course: location.course,
-                                       roads: roads,
+                                       roads: lines,
                                        backfillMeters: backfillMeters,
                                        lookaheadMeters: lookaheadMeters,
                                        toleranceMeters: toleranceMeters,
                                        alreadyCalled: calledApexes)
-        else {
-            if roads.isEmpty, LocalRoadSource.roadDataLooksAbsent { onRoadDataAbsent?() }
-            return false
-        }
+        else { return false }
+        return install(window)
+    }
 
+    /// Whether the router may be asked again yet.
+    ///
+    /// Needs a heading — the line is routed to a point ahead *along it*, and a
+    /// fix with no course has no "ahead". Then the distance-and-time floor, which
+    /// is longer after a failure because an empty answer is nearly always a dead
+    /// zone rather than an unroutable road.
+    private func shouldAskRouter(at location: CLLocation) -> Bool {
+        guard location.course >= 0, location.course.isFinite else { return false }
+        guard let last = lastNetworkAt, let point = lastNetworkPoint else { return true }
+        let floor = networkFailed ? Self.networkBackoffSeconds : Self.networkRetrySeconds
+        guard Date().timeIntervalSince(last) >= floor else { return false }
+        return GeoMath.distanceMeters(point, GeoPoint.from(location.coordinate))
+            >= Self.networkRetryMeters
+    }
+
+    private func install(_ window: Window) -> Bool {
         navigator = PacenoteNavigator(coordinates: window.coordinates,
                                       pacenotes: window.pacenotes,
                                       callDistanceScale: callDistanceScale)
@@ -350,6 +474,9 @@ public final class LivePacenoteSource {
         buildScheduled = false
         lastAttemptAt = nil
         lastAttemptPoint = nil
+        lastNetworkAt = nil
+        lastNetworkPoint = nil
+        networkFailed = false
         windowRoadName = nil
         windowRevision = 0
     }

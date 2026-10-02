@@ -101,6 +101,12 @@ public final class DriveEngine: NSObject, CLLocationManagerDelegate {
             live.onRoadDataAbsent = { [weak self] in
                 self?.toast = "No road data in this build — live pacenotes are off."
             }
+            // Neither the bundled tiles nor the router can describe this road.
+            // Said once: the drive carries on recording, it just has no
+            // co-driver on this stretch.
+            live.onRoadUnavailable = { [weak self] in
+                self?.toast = "No road ahead known here — pacenotes need a signal."
+            }
             liveSource = live
         }
         liveWindowRevision = 0

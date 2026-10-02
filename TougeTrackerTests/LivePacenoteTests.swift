@@ -183,6 +183,115 @@ final class LivePacenoteTests: XCTestCase {
         XCTAssertGreaterThan(GeoMath.lengthMeters(window), 400)
     }
 
+    // MARK: - Roads the tiles do not carry
+
+    /// Counts router calls, so an assertion can hold a reference to the same box
+    /// the loader writes to.
+    private final class Counter: @unchecked Sendable {
+        private(set) var value = 0
+        func bump() { value += 1 }
+    }
+
+    /// A source whose tiles are empty and whose router answers with `line`.
+    private func routedSource(line: [TougeRoad], calls: Counter) -> LivePacenoteSource {
+        LivePacenoteSource(loader: { _ in [] },
+                           lineLoader: { _, _, _ in calls.bump(); return line })
+    }
+
+    func testARoutedLineIsWindowedAndCalled() async {
+        // The road the car is on is in no tile — the case that used to be
+        // silence. The routed line goes through the same window code.
+        let coords = fixtureCoordinates("db1_74432352_School_House_Road")
+        let source = routedSource(line: [fixtureRoad("db1_74432352_School_House_Road")],
+                                  calls: Counter())
+
+        let calls = await drive(source, coords: coords)
+        XCTAssertTrue(source.isActive, "a routed line produced no window")
+        XCTAssertFalse(calls.isEmpty, "a free drive over a routed road produced no calls")
+    }
+
+    func testTheRouterIsNotAskedWhenTheTilesHaveTheRoad() async {
+        // The tiles are on the phone and free. A drive on a scored road must not
+        // spend a request per window on a public demo server.
+        let coords = fixtureCoordinates("db1_74432352_School_House_Road")
+        let road = fixtureRoad("db1_74432352_School_House_Road")
+        let calls = Counter()
+        let source = LivePacenoteSource(loader: { _ in [road] },
+                                        lineLoader: { _, _, _ in calls.bump(); return [road] })
+
+        // Stop well short of the end: running out of tiled road is exactly when the
+        // router *should* be asked, so this only measures the part of the drive
+        // where the tiles still have road ahead.
+        _ = await drive(source, coords: coords, stopAfter: coords.count / 3)
+        XCTAssertGreaterThan(source.windowRevision, 1)
+        XCTAssertEqual(calls.value, 0, "the router was asked on a road the tiles carry")
+    }
+
+    func testTheRouterIsAskedWhenTheTilesRunOut() async {
+        // The other half of that rule: at the end of a scored road the tiles have
+        // nothing ahead, and that is precisely when a request is worth making —
+        // the road almost certainly continues.
+        let coords = fixtureCoordinates("db1_74432352_School_House_Road")
+        let road = fixtureRoad("db1_74432352_School_House_Road")
+        let calls = Counter()
+        let source = LivePacenoteSource(loader: { _ in [road] },
+                                        lineLoader: { _, _, _ in calls.bump(); return [road] })
+
+        let last = coords[coords.count - 1]
+        let course = GeoMath.bearing(coords[coords.count - 2], last)
+        _ = await source.rebuild(at: location(last, course: course))
+        XCTAssertEqual(calls.value, 1, "running out of tiled road did not reach the router")
+    }
+
+    func testTheRouterIsRateLimitedBetweenWindows() async {
+        // Two rebuilds a few metres apart are one ask, not two: this runs inside
+        // a 20Hz recorder.
+        let coords = fixtureCoordinates("db1_74432352_School_House_Road")
+        let calls = Counter()
+        let source = routedSource(line: [fixtureRoad("db1_74432352_School_House_Road")],
+                                  calls: calls)
+
+        _ = await source.rebuild(at: location(coords[0],
+                                               course: GeoMath.bearing(coords[0], coords[1])))
+        _ = await source.rebuild(at: location(coords[1],
+                                               course: GeoMath.bearing(coords[1], coords[2])))
+        XCTAssertEqual(calls.value, 1,
+                       "the router was asked twice without the car covering any ground")
+    }
+
+    func testAnEmptyRoutedLineIsNotSpammed() async {
+        // No signal in a canyon: the router keeps saying nothing and the source
+        // must not keep knocking.
+        let coords = fixtureCoordinates("db1_74432352_School_House_Road")
+        let calls = Counter()
+        let source = routedSource(line: [], calls: calls)
+
+        _ = await source.rebuild(at: location(coords[0],
+                                               course: GeoMath.bearing(coords[0], coords[1])))
+        XCTAssertFalse(source.isActive)
+        XCTAssertEqual(calls.value, 1)
+
+        for p in coords.dropFirst() {
+            _ = await source.rebuild(at: location(p, course: 90))
+        }
+        XCTAssertEqual(calls.value, 1, "the router was retried while backing off")
+    }
+
+    func testNoHeadingMeansNoRouterCall() async {
+        // A fix with no course has no "ahead" to route to, and asking anyway
+        // would aim the line in an arbitrary direction.
+        let coords = fixtureCoordinates("db1_74432352_School_House_Road")
+        let calls = Counter()
+        let source = routedSource(line: [fixtureRoad("db1_74432352_School_House_Road")],
+                                  calls: calls)
+        let blind = CLLocation(coordinate: coords[0].clLocation, altitude: 0,
+                               horizontalAccuracy: 5, verticalAccuracy: 5,
+                               course: -1, speed: 0, timestamp: Date())
+        let built = await source.rebuild(at: blind)
+        XCTAssertFalse(built)
+        XCTAssertEqual(calls.value, 0)
+    }
+
     // MARK: - Not calling
 
     func testNothingIsCalledWhereNoKnownRoadIs() async {
