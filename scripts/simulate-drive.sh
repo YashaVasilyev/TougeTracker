@@ -6,6 +6,7 @@ cd "$(dirname "$0")/.."
 OUT="${TMPDIR:-/tmp}/simdrive"
 swiftc -O \
   TougeTracker/Core/Geo/GeoMath.swift \
+  TougeTracker/Core/Pacenotes/CornerTrend.swift \
   TougeTracker/Core/Pacenotes/PacenoteGenerator.swift \
   TougeTracker/Core/Pacenotes/PacenoteNavigator.swift \
   TougeTracker/Core/Pacenotes/CoDriverPhrases.swift \

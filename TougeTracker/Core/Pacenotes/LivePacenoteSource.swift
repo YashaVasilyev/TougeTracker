@@ -71,6 +71,14 @@ public final class LivePacenoteSource {
     /// contain a corner, and there is nothing to say about it anyway.
     nonisolated public static let minimumWindowMeters: Double = 100
 
+    /// The closest two window builds may be, in metres of driving.
+    ///
+    /// The floor for a case the rebuild trigger cannot otherwise see: a window
+    /// is a kilometre of road, so on a road shorter than that the "nearly spent"
+    /// test is true from the very first fix, and the window is rebuilt every few
+    /// metres for the whole drive.
+    nonisolated public static let rebuildFloorMeters: Double = 150
+
     /// How far ahead a window reaches, as a function of the call-distance
     /// setting: past the furthest a note is ever called, with room to spare so
     /// the rebuild lands before a corner needs calling rather than during it.
@@ -120,10 +128,20 @@ public final class LivePacenoteSource {
 
     // MARK: - State
 
+    /// Wall clock, injectable.
+    ///
+    /// It gates the router and the retry backoff, and a simulation drives a
+    /// whole road in milliseconds — with the real clock, the rate limiter would
+    /// refuse every request after the first and the replay would go silent from
+    /// there. A simulated clock makes that replay show what a drive would
+    /// actually do.
+    public typealias Clock = @Sendable () -> Date
+
     private let loader: RoadLoader
     /// The fallback for roads the tiles do not carry. Nil means tiles-only, which
     /// is what the tests use unless they are specifically exercising this.
     private let lineLoader: LineLoader?
+    private let now: Clock
     private let backfillMeters: Double
     private let toleranceMeters: Double
     private var lookaheadMeters: Double
@@ -140,6 +158,10 @@ public final class LivePacenoteSource {
     private var buildScheduled = false
     private var lastAttemptAt: Date?
     private var lastAttemptPoint: GeoPoint?
+    /// Where the car was when the current window was built, for the rebuild
+    /// floor. Distinct from `lastAttemptPoint`, which is where the last *attempt*
+    /// started: an attempt that found nothing must not hold the floor.
+    private var lastBuildPoint: GeoPoint?
     /// When the router was last asked, and from where. Rate-limiting a public
     /// demo server from inside a drive recorder.
     private var lastNetworkAt: Date?
@@ -199,12 +221,14 @@ public final class LivePacenoteSource {
                 callDistanceScale: Double = 1.0,
                 backfillMeters: Double = LivePacenoteSource.backfillMeters,
                 lookaheadMeters: Double? = nil,
-                toleranceMeters: Double = LivePacenoteSource.toleranceMeters) {
+                toleranceMeters: Double = LivePacenoteSource.toleranceMeters,
+                now: @escaping Clock = { Date() }) {
         self.loader = loader
         self.lineLoader = lineLoader
         self.callDistanceScale = callDistanceScale
         self.backfillMeters = backfillMeters
         self.toleranceMeters = toleranceMeters
+        self.now = now
         self.lookaheadMeters = lookaheadMeters
             ?? LivePacenoteSource.lookaheadMeters(callScale: callDistanceScale)
     }
@@ -265,7 +289,7 @@ public final class LivePacenoteSource {
     /// than tested — and released here, whoever set it.
     private func buildWindow(at location: CLLocation) async -> Bool {
         defer { buildScheduled = false }
-        lastAttemptAt = Date()
+        lastAttemptAt = now()
         lastAttemptPoint = GeoPoint.from(location.coordinate)
         let roads = await loader(location.coordinate)
 
@@ -279,7 +303,7 @@ public final class LivePacenoteSource {
                                     lookaheadMeters: lookaheadMeters,
                                     toleranceMeters: toleranceMeters,
                                     alreadyCalled: calledApexes) {
-            return install(window)
+            return install(window, at: location)
         }
 
         if roads.isEmpty, LocalRoadSource.roadDataLooksAbsent { onRoadDataAbsent?() }
@@ -297,9 +321,10 @@ public final class LivePacenoteSource {
     private func buildWindowFromRouter(at location: CLLocation) async -> Bool {
         guard let lineLoader, shouldAskRouter(at: location) else { return false }
 
-        lastNetworkAt = Date()
+        lastNetworkAt = now()
         lastNetworkPoint = GeoPoint.from(location.coordinate)
-        let lines = await lineLoader(location.coordinate, location.course, lookaheadMeters)
+        let course = Self.normalizedCourse(location.course)
+        let lines = await lineLoader(location.coordinate, course, lookaheadMeters)
         networkFailed = lines.isEmpty
         if networkFailed, !warnedUnavailable {
             warnedUnavailable = true
@@ -316,7 +341,7 @@ public final class LivePacenoteSource {
                                        toleranceMeters: toleranceMeters,
                                        alreadyCalled: calledApexes)
         else { return false }
-        return install(window)
+        return install(window, at: location)
     }
 
     /// Whether the router may be asked again yet.
@@ -326,19 +351,20 @@ public final class LivePacenoteSource {
     /// is longer after a failure because an empty answer is nearly always a dead
     /// zone rather than an unroutable road.
     private func shouldAskRouter(at location: CLLocation) -> Bool {
-        guard location.course >= 0, location.course.isFinite else { return false }
+        guard Self.normalizedCourse(location.course) >= 0 else { return false }
         guard let last = lastNetworkAt, let point = lastNetworkPoint else { return true }
         let floor = networkFailed ? Self.networkBackoffSeconds : Self.networkRetrySeconds
-        guard Date().timeIntervalSince(last) >= floor else { return false }
+        guard now().timeIntervalSince(last) >= floor else { return false }
         return GeoMath.distanceMeters(point, GeoPoint.from(location.coordinate))
             >= Self.networkRetryMeters
     }
 
-    private func install(_ window: Window) -> Bool {
+    private func install(_ window: Window, at location: CLLocation) -> Bool {
         navigator = PacenoteNavigator(coordinates: window.coordinates,
                                       pacenotes: window.pacenotes,
                                       callDistanceScale: callDistanceScale)
         windowRoadName = window.roadName
+        lastBuildPoint = GeoPoint.from(location.coordinate)
         windowRevision += 1
         return true
     }
@@ -405,7 +431,7 @@ public final class LivePacenoteSource {
         // with. Guessing here would be worse than waiting: a window facing the
         // wrong way calls every left that is really a right.
         var forward = true
-        if course >= 0, course.isFinite {
+        if normalizedCourse(course) >= 0 {
             let downstream = GeoMath.bearingAtDistance(coords, cumulative: cumulative,
                                                       distance: min(total, snap.distanceAlongRoad + 30))
             forward = abs(GeoMath.wrap180(course - downstream)) <= 90
@@ -422,7 +448,7 @@ public final class LivePacenoteSource {
         // corner the driver was just told about is the single most obvious way
         // this could embarrass itself.
         var notes = PacenoteGenerator.generate(points).turns
-        notes.removeAll { isAlreadyCalled($0.apex, in: alreadyCalled) }
+        notes = droppingCalled(notes, alreadyCalled: alreadyCalled)
 
         return Window(coordinates: points.map(\.clLocation), pacenotes: notes,
                       roadID: snap.road.id, roadName: snap.road.name)
@@ -432,10 +458,71 @@ public final class LivePacenoteSource {
         called.contains { GeoMath.distanceMeters(apex, $0) < apexMatchMeters }
     }
 
+    /// A course in 0-360, or -1 when the fix carries none.
+    ///
+    /// CoreLocation reports a heading in 0-360 and -1 for "no heading". A course
+    /// computed from geometry -- which is what the simulator, the tests, and any
+    /// caller that builds a fix itself -- is -180...180, so a road running west
+    /// arrives here as a perfectly valid -90 that reads as "no heading". The
+    /// free-drive replay found it as silence: every fixture road that heads west
+    /// out of its origin was refused a router call, so those drives produced no
+    /// pacenotes at all.
+    ///
+    /// -1 exactly is CoreLocation's sentinel and passes through as such; that one
+    /// really is unknown. Every other negative value is a bearing in -180...0,
+    /// which is 180 degrees of perfectly good heading.
+    nonisolated public static func normalizedCourse(_ course: Double) -> Double {
+        guard course.isFinite else { return -1 }
+        if course < 0 {
+            return course == -1 ? -1 : (course + 360).truncatingRemainder(dividingBy: 360)
+        }
+        return course.truncatingRemainder(dividingBy: 360)
+    }
+
+    /// The notes a window should carry: the generated ones minus the corners
+    /// already called.
+    ///
+    /// And minus the straight that immediately followed each of them. That is
+    /// the one subtlety this dedup has, and the free-drive replay is what found
+    /// it: a straight is only ever said *with* the corner it follows — "five
+    /// right, 1200" — so dropping that corner while keeping its straight leaves
+    /// a bare distance with no corner attached, called on its own a moment
+    /// later. "220", said to nobody, is precisely what the planned-drive tests
+    /// forbid, and a rolling window was reintroducing it on every rebuild.
+    ///
+    /// Only a straight that *immediately* follows goes: that one carries the
+    /// meaning of the corner before it. A straight further along belongs to the
+    /// road, not to a corner that is no longer there.
+    public static func droppingCalled(_ notes: [Pacenote],
+                                      alreadyCalled: [GeoPoint]) -> [Pacenote] {
+        var keep = [Bool](repeating: true, count: notes.count)
+        for i in notes.indices where isAlreadyCalled(notes[i].apex, in: alreadyCalled) {
+            keep[i] = false
+            let next = i + 1
+            if next < notes.count, notes[next].isStraight,
+               notes[next].startDist - notes[i].endDist < 1 {
+                keep[next] = false
+            }
+        }
+        return zip(notes, keep).filter(\.1).map(\.0)
+    }
+
     // MARK: - Rebuild policy
 
     private func shouldRebuild(at location: CLLocation) -> Bool {
         guard !buildScheduled else { return false }
+
+        // A floor on how often a window may be replaced, whatever the state
+        // below says. A window is a kilometre of road, and on a road shorter
+        // than that the "nearly spent" test is true from the first fix onwards
+        // — the replay rebuilt the window every four metres, spending the
+        // battery on notes it had already said.
+        if let built = lastBuildPoint,
+           GeoMath.distanceMeters(built, GeoPoint.from(location.coordinate))
+            < Self.rebuildFloorMeters {
+            return false
+        }
+
         guard let navigator else { return retryElapsed(at: location) }
 
         // The window is nearly spent: rebuild while there is still road ahead,
@@ -453,7 +540,7 @@ public final class LivePacenoteSource {
 
     private func retryElapsed(at location: CLLocation) -> Bool {
         guard let lastAt = lastAttemptAt, let lastPoint = lastAttemptPoint else { return true }
-        if Date().timeIntervalSince(lastAt) >= Self.retrySeconds { return true }
+        if now().timeIntervalSince(lastAt) >= Self.retrySeconds { return true }
         return GeoMath.distanceMeters(lastPoint, GeoPoint.from(location.coordinate))
             >= Self.retryMeters
     }
@@ -474,6 +561,7 @@ public final class LivePacenoteSource {
         buildScheduled = false
         lastAttemptAt = nil
         lastAttemptPoint = nil
+        lastBuildPoint = nil
         lastNetworkAt = nil
         lastNetworkPoint = nil
         networkFailed = false
