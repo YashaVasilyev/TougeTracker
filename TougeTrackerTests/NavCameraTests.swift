@@ -1,6 +1,8 @@
 import XCTest
 @testable import TougeTracker
 import CoreLocation
+import MapKit
+import SwiftUI
 
 /// Covers the drive map's navigation camera: which way it points, where it
 /// aims, and how it gets there.
@@ -209,5 +211,79 @@ final class NavCameraTests: XCTestCase {
         // spinning icon.
         let rotation = NavCamera.puckRotation(bearing: 90, cameraHeading: 45)
         XCTAssertEqual(rotation, 45, accuracy: 0.001)
+    }
+
+    // MARK: - Following, and letting go of it
+
+    @MainActor
+    func testPanningTheMapGivesUpFollowing() {
+        let camera = DriveNavigationCamera()
+        camera.ingest(fix())
+        // The driver drags the map a long way off the car.
+        camera.userMovedCamera(to: MapCamera(centerCoordinate: displaced(300),
+                                            distance: 900, heading: 12))
+        XCTAssertFalse(camera.isFollowing)
+    }
+
+    @MainActor
+    func testAnOrdinaryCameraMoveIsNotMistakenForAPan() {
+        // MapKit settling into the camera we asked for must not read as the
+        // driver intervening, or the map quietly stops following itself.
+        let camera = DriveNavigationCamera()
+        camera.ingest(fix())
+        // Echo back the camera the map was actually given — centre, heading and
+        // altitude alike. Asserting against a distance the camera never
+        // commanded would not be testing the gesture threshold at all; it would
+        // be testing a zoom the driver never made.
+        let commanded = camera.state
+        camera.userMovedCamera(to: MapCamera(centerCoordinate: commanded.center,
+                                            distance: commanded.distance,
+                                            heading: commanded.heading))
+        XCTAssertTrue(camera.isFollowing)
+    }
+
+    @MainActor
+    func testRecenterPutsTheCameraBackOnTheCarAndKeepsFollowing() {
+        // The regression this whole section exists for: Recenter used to restart
+        // the display link *after* the link had thrown its frame callback away,
+        // so the camera reported itself as following again while nothing could
+        // move it. The flag was true and the map was dead.
+        let camera = DriveNavigationCamera()
+        camera.ingest(fix())
+        camera.userMovedCamera(to: MapCamera(centerCoordinate: displaced(300),
+                                            distance: 900, heading: 12))
+        camera.resumeFollowing()
+        XCTAssertTrue(camera.isFollowing)
+
+        // Now deliver frames the way the display link would, through the ticker's
+        // own callback. Against a camera whose `stop()` cleared that callback,
+        // every one of these is a no-op and the camera stays stranded 300 m away.
+        let car = GeoPoint(lon: -122.0090, lat: 37.3349)
+        var now: CFTimeInterval = 100
+        for _ in 1...240 {
+            now += 1.0 / 60.0
+            let ahead = GeoMath.destination(car, 20 * (now - 100), 90)
+            camera.ingest(NavFix(coordinate: ahead.clLocation, course: 90,
+                                 compass: nil, speed: 20, timestamp: now))
+            camera.deliverFrame(at: now)
+        }
+
+        // Measured against where the car has got to, not where it started. Over
+        // four seconds at 20 m/s it is 80 m down the road, so a camera still near
+        // the start point would be reporting progress it did not make.
+        let carNow = GeoMath.destination(car, 20 * (now - 100), 90)
+        let centre = GeoPoint.from(camera.state.center)
+        let lag = GeoMath.distanceMeters(centre, carNow)
+        // The lead is 12 m at this speed, so the camera is *meant* to sit about
+        // that far ahead of the car; what must not happen is the 300 m of
+        // separation the pan left behind. Anything under a car's length of
+        // lag beyond the lead means the glide has caught up.
+        XCTAssertLessThan(lag, NavCamera.leadDistance(speed: 20) + 20,
+                          "camera did not glide back to the car after Recenter "
+                          + "(lag \(lag) m)")
+    }
+
+    private func displaced(_ meters: Double) -> CLLocationCoordinate2D {
+        GeoMath.destination(GeoPoint(lon: -122.0090, lat: 37.3349), meters, 0).clLocation
     }
 }

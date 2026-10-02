@@ -86,7 +86,7 @@ final class DriveNavigationCamera {
         lastCommanded = initial
         position = DriveNavigationCamera.mapPosition(for: initial)
         ticker = DisplayLinkTicker()
-        ticker.onFrame = { [weak self] in self?.frame() }
+        ticker.onFrame = { [weak self] now in self?.advance(to: now) }
     }
 
     deinit {
@@ -115,15 +115,34 @@ final class DriveNavigationCamera {
         ticker.start()
     }
 
+    /// Halts the easing without letting go of the frame callback, so that
+    /// `resumeFollowing()` can bring the camera back.
     func stop() {
-        ticker.invalidate()
+        ticker.stop()
     }
 
+    /// Runs one frame through the ticker's own callback, as though the display
+    /// link had fired at `now`.
+    ///
+    /// For tests, which have no display link and so cannot otherwise observe
+    /// whether the camera is still wired up to its frames at all. Routing
+    /// through the callback rather than straight into the easing is deliberate:
+    /// `stop()` used to clear that callback, and only a test that goes through
+    /// it can catch that happening again.
+    func deliverFrame(at now: CFTimeInterval) {
+        ticker.deliverFrame(at: now)
+    }
 
     // MARK: - The frame
 
-    private func frame() {
-        let now = CACurrentMediaTime()
+    /// One frame's worth of easing, as of `now`.
+    ///
+    /// Split out from the ticker callback so the time is a parameter rather than
+    /// a read of the clock. Easing is defined in terms of elapsed seconds, so a
+    /// test that cannot choose the elapsed time cannot exercise it: a tight loop
+    /// around the real clock eases by nothing at all, and a camera that fails to
+    /// move looks exactly like a camera that has stopped following.
+    func advance(to now: CFTimeInterval) {
         // A first frame, or a resume from the background, has no meaningful
         // `dt`. Easing by one nominal frame is harmless; easing by the several
         // seconds that were missed would snap the map across the countryside.
@@ -227,12 +246,16 @@ private final class DisplayLinkTicker: NSObject, @unchecked Sendable {
     /// Set by the owner. Held as a closure rather than a target reference so the
     /// owner can capture itself weakly.
     ///
+    /// Takes the frame time as an argument so the owner — and a test — can decide
+    /// what "now" is. The display link passes `CACurrentMediaTime()`, which is
+    /// what production gets; nothing here reads the clock on the owner's behalf.
+    ///
     /// `nonisolated(unsafe)` because `invalidate()` nils it and is called from
     /// `deinit`, which is not on the main actor. It is only ever *written* on the
     /// main actor — from `init` and from `invalidate` — and only ever called on
     /// it, so there is no race here; the attribute is simply the price of being
     /// able to stop the link from a deinit at all.
-    nonisolated(unsafe) var onFrame: (@MainActor () -> Void)?
+    nonisolated(unsafe) var onFrame: (@MainActor (CFTimeInterval) -> Void)?
 
     private var link: CADisplayLink?
 
@@ -250,9 +273,28 @@ private final class DisplayLinkTicker: NSObject, @unchecked Sendable {
         self.link = link
     }
 
-    func invalidate() {
+    /// Stops the frames but keeps the callback installed, so a later `start()`
+    /// picks up where this left off.
+    ///
+    /// This is what a *pause* of following uses — the driver has panned away and
+    /// will want the camera back — and it deliberately does not clear `onFrame`.
+    /// Clearing it here was the bug that made Recenter a one-way door: the chip
+    /// called `start()`, the link came back up, and every frame it delivered went
+    /// to a nil closure, so the camera sat frozen exactly where the driver had
+    /// stranded it with no way to recover short of quitting the tab.
+    func stop() {
         link?.invalidate()
         link = nil
+    }
+
+    /// Full teardown, callback included. Only for destruction.
+    ///
+    /// The closure captures the owner weakly, so leaving it installed past
+    /// deinit would not leak the camera — but it would be a closure nobody can
+    /// ever call again, and clearing it here is what makes the difference between
+    /// "paused" and "gone" explicit at the call site.
+    func invalidate() {
+        stop()
         onFrame = nil
     }
 
@@ -260,7 +302,20 @@ private final class DisplayLinkTicker: NSObject, @unchecked Sendable {
         // Delivered on the main run loop, so this is not a hop in practice; it
         // is written as `assumeIsolated` because a `Task` here can be scheduled
         // late and land after a newer frame.
-        MainActor.assumeIsolated { onFrame?() }
+        MainActor.assumeIsolated { onFrame?(CACurrentMediaTime()) }
+    }
+
+    /// Delivers one frame to the callback, if there is one, as though the link
+    /// had fired at `now`.
+    ///
+    /// The seam that lets a test exercise the real frame path — callback
+    /// included — without a display link. Going through `onFrame` rather than
+    /// calling the owner's easing directly is the whole point: a test that skips
+    /// the callback cannot tell a working camera from one whose callback was
+    /// cleared out from under it, which is exactly the Recenter bug.
+    @MainActor
+    func deliverFrame(at now: CFTimeInterval) {
+        onFrame?(now)
     }
 }
 

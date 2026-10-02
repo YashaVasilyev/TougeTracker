@@ -60,25 +60,29 @@ struct DriveHUDView: View {
                     .stroke(Theme.accent, lineWidth: 3)
             }
             ForEach(engine.pacenoteAnnotations) { marker in
-                Annotation(coordinate: marker.coordinate) {
-                    EmptyView()
-                } label: {
+                // The pin goes in the *content*, not the `label`. The content is
+                // laid out in screen space and does not turn with the map, which
+                // is what a pin wants; MapKit's default label is a callout that
+                // is hidden and re-shown by the annotation system.
+                Annotation("", coordinate: marker.coordinate, content: {
                     Image(systemName: "mappin.circle.fill")
                         .foregroundStyle(.red).font(.caption2).offset(y: -10)
-                }
+                })
             }
             if let loc = engine.lastLocation {
-                Annotation(coordinate: loc) {
-                    EmptyView()
-                } label: {
-                    // The point of the arrow: annotation content is laid out on
-                    // the screen rather than turned with the map, so rotating it
-                    // by the bearing relative to the camera's heading leaves it
-                    // pointing up the screen in heading-up, and swinging round to
-                    // the car's real direction the moment the map is north-up.
+                // The point of the arrow: annotation content is laid out on
+                // the screen rather than turned with the map, so rotating it
+                // by the bearing relative to the camera's heading leaves it
+                // pointing up the screen in heading-up, and swinging round to
+                // the car's real direction the moment the map is north-up.
+                //
+                // In the content closure, not the label: a label is a callout
+                // bubble, and MapKit is free to drop, defer or occlude one —
+                // which is why the arrow was never on screen at all.
+                Annotation("", coordinate: loc, content: {
                     DrivePuckView(rotationDegrees: camera.puckRotationDegrees,
                                   showsBeam: engine.currentSpeedMps > 1.5)
-                }
+                })
             }
         }
         // Standard, flat, and without the points-of-interest layer. Navigation
