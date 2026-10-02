@@ -94,6 +94,23 @@ public struct PacenoteOptions: Sendable {
 /// tests check that it keeps doing so — not that it matches another codebase.
 public enum PacenoteGenerator {
 
+    /// The spacing the road is resampled to before corners are measured.
+    ///
+    /// Public because it is load-bearing for anything that calls `generate` with
+    /// a *slice* of a road rather than the whole thing. Severity is measured on
+    /// a 10m chord, so for a gentle corner — one in the `Flat` band, radius
+    /// 150-300m — the grade depends on where the sample points fall. The sample
+    /// points are multiples of this step from the start of whatever geometry it
+    /// is handed, so the same corner on the same road is called "Flat", "Flat
+    /// long" or nothing at all depending on the phase of the caller's start.
+    ///
+    /// The live pacenote source hit this as a co-driver that lost corners at
+    /// random: a window starting one metre further along changed the corner's
+    /// grade, and three metres further along dropped it. It now aligns every
+    /// window to this grid, which both fixes the loss and makes a free drive call
+    /// a road exactly as handing that road over whole would.
+    public static let resampleStepMeters: Double = 5.0
+
     /// Severity counts up towards the tight end. `Flat` sits just above a
     /// straight and below a 6: it is a real bend, but the gentlest one called.
     static let severityOrder: [String: Int] = [
@@ -255,7 +272,7 @@ public enum PacenoteGenerator {
 
         // --- Step 1.5: Resample to consistent 5m segments ---
         let totalLength = GeoMath.lengthMeters(smoothedCoords)
-        let stepSize = 5.0
+        let stepSize = Self.resampleStepMeters
         var points: [GeoPoint] = []
         var d = 0.0
         while d <= totalLength {

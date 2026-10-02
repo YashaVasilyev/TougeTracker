@@ -92,6 +92,28 @@ final class Simulation {
         var seen = 0
         var seconds: TimeInterval = 0
 
+        // The car sits for a moment before it moves, and so does the app: the
+        // first window is built by a task and lands a few ticks after recording
+        // starts. Without those ticks the replay was a race -- the same road gave
+        // three calls alone and none in a sweep, purely on whether the window
+        // landed before the car reached the first corner. Real time passes here;
+        // in a replay that takes milliseconds, it has to be asked for.
+        let start = GeoMath.along(coords, distance: 0)
+        let justAhead = GeoMath.along(coords, distance: 10)
+        var warmup = 0
+        while !source.isActive, warmup < 500 {
+            warmup += 1
+            let stationary = CLLocation(coordinate: start.clLocation, altitude: 0,
+                                        horizontalAccuracy: 5, verticalAccuracy: 5,
+                                        course: GeoMath.bearing(start, justAhead),
+                                        speed: 0, timestamp: clock.now)
+            // Any call made while parked is discarded: this is the GPS settling
+            // before the drive, not the drive. Counted, it put an extra corner on
+            // every short road that starts with one close to the line.
+            _ = source.update(location: stationary, speed: 0)
+            await Task.yield()
+        }
+
         while travelled <= total {
             let here = GeoMath.along(coords, distance: travelled)
             let next = GeoMath.along(coords, distance: min(travelled + step, total))
@@ -113,9 +135,12 @@ final class Simulation {
                 seen = source.windowRevision
                 installedWindows += 1
                 if ProcessInfo.processInfo.environment["TRACE"] != nil {
-                    let notes = source.upcoming(count: 3).map(\.text)
-                    FileHandle.standardOutput.write(Data(
-                        "    [window \(seen) at \(Int(travelled))m] first: \(notes)\n".utf8))
+                    let upcoming = source.upcoming(count: 3).map(\.text)
+                    let all = source.annotations.map(\.title)
+                    let line = GeoMath.lengthMeters(source.routeCoordinates.map(GeoPoint.from))
+                    let text = "    [window \(seen) at \(Int(travelled))m len \(Int(line))m] "
+                        + "all(\(all.count)): \(all)  next: \(upcoming)\n"
+                    FileHandle.standardOutput.write(Data(text.utf8))
                 }
             }
             travelled += step

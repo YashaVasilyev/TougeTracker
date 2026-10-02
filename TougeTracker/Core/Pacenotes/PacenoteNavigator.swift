@@ -57,9 +57,19 @@ public final class PacenoteNavigator {
     private var lastAnnouncedNote: Pacenote?
     private var offRouteSince: Date?
 
+    /// - Parameter startingProgressMeters: how far along `coordinates` the car
+    ///   already is, for a navigator built around a moving car rather than at the
+    ///   start of a route.
+    ///
+    ///   The live pacenote source begins its window a little behind the car, so
+    ///   the snapping tolerance survives a fix that lands a few metres off the
+    ///   road. Starting the cursor at zero therefore put it ~60m behind where the
+    ///   car really was, and a corner sitting just behind the driver read as
+    ///   imminent — the co-driver announcing a corner it had already passed.
     public init(coordinates: [CLLocationCoordinate2D],
                 pacenotes: [Pacenote]? = nil,
-                callDistanceScale: Double = 1.0) {
+                callDistanceScale: Double = 1.0,
+                startingProgressMeters: Double = 0) {
         self.originalCoordinates = coordinates
         self.coordinates = coordinates
         let pts = coordinates.map { GeoPoint.from($0) }
@@ -67,6 +77,7 @@ public final class PacenoteNavigator {
         self.totalLength = cumulative.last ?? 0
         self.pacenotes = pacenotes ?? PacenoteGenerator.generate(pts).turns
         self.callDistanceScale = callDistanceScale
+        self.progressDistance = max(0, startingProgressMeters)
     }
 
     /// Speed-scaled call distance: call farther ahead at highway speeds.

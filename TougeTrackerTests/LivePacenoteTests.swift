@@ -206,6 +206,60 @@ final class LivePacenoteTests: XCTestCase {
                              "the drawn line stops short of what the driver can see")
     }
 
+    // MARK: - The resampling grid
+
+    func testAGentleCornerIsCalledTheSameWayFromAnyWindow() throws {
+        // The generator resamples to 5m from the start of whatever geometry it is
+        // handed, and measures severity on a 10m chord, so a corner in the
+        // marginal `Flat` band changes with the sampling phase. On Clifford Lake
+        // the phase decided the answer outright: one window start called it
+        // "Flat", the next metre called it "Flat long", the next dropped it
+        // entirely — the co-driver losing a corner at random.
+        //
+        // The live source aligns every window to that grid, so a road is called
+        // the same way from wherever the car happens to be.
+        let coords = fixtureCoordinates("db2_863398308_Clifford_Lake_Road")
+        let road = fixtureRoad("db2_863398308_Clifford_Lake_Road")
+
+        var seen: [String] = []
+        for metres in [4100.0, 4213.0, 4327.0, 4400.0, 4488.0] {
+            let here = GeoMath.along(coords, distance: metres)
+            let ahead = GeoMath.along(coords, distance: metres + 10)
+            let window = LivePacenoteSource.window(
+                at: here.clLocation, course: GeoMath.bearing(here, ahead),
+                roads: [road], lookaheadMeters: 1000)
+            seen.append(window?.pacenotes.first?.text ?? "no corner found")
+        }
+
+        XCTAssertEqual(Set(seen).count, 1,
+                       "the same corner is called differently depending on where the window began: \(seen)")
+        XCTAssertEqual(seen.first, "Flat L")
+    }
+
+    func testAWindowDoesNotCallACornerTheCarHasAlreadyPassed() async throws {
+        // A window starts behind the car so that a fix a few metres off the road
+        // still snaps. Starting the navigator's cursor at zero therefore left it
+        // 60m behind the driver, and a corner just behind them read as imminent —
+        // the co-driver announcing something it had already passed.
+        let coords = fixtureCoordinates("db1_74432352_School_House_Road")
+        let road = fixtureRoad("db1_74432352_School_House_Road")
+        let here = GeoMath.along(coords, distance: 700)
+        let ahead = GeoMath.along(coords, distance: 710)
+        let window = LivePacenoteSource.window(
+            at: here.clLocation, course: GeoMath.bearing(here, ahead),
+            roads: [road], lookaheadMeters: 1000)
+        let built = try XCTUnwrap(window)
+
+        XCTAssertGreaterThan(built.startingProgressMeters, 0,
+                             "a window built around a moving car must say where in it the car is")
+        // Every note offered starts beyond the car, give or take the corner the
+        // car is currently in.
+        for note in built.pacenotes {
+            XCTAssertGreaterThan(note.startDist, -1,
+                                 "\(note.text) starts behind the car")
+        }
+    }
+
     // MARK: - Roads the tiles do not carry
 
     /// Counts router calls, so an assertion can hold a reference to the same box

@@ -47,6 +47,9 @@ public final class LivePacenoteSource {
     public struct Window: Sendable {
         public var coordinates: [CLLocationCoordinate2D]
         public var pacenotes: [Pacenote]
+        /// How far along `coordinates` the car is — non-zero because a window
+        /// starts behind it, so the navigator must not start its cursor at zero.
+        public var startingProgressMeters: Double
         public var roadID: Int64
         public var roadName: String?
     }
@@ -362,7 +365,8 @@ public final class LivePacenoteSource {
     private func install(_ window: Window, at location: CLLocation) -> Bool {
         navigator = PacenoteNavigator(coordinates: window.coordinates,
                                       pacenotes: window.pacenotes,
-                                      callDistanceScale: callDistanceScale)
+                                      callDistanceScale: callDistanceScale,
+                                      startingProgressMeters: window.startingProgressMeters)
         windowRoadName = window.roadName
         lastBuildPoint = GeoPoint.from(location.coordinate)
         windowRevision += 1
@@ -420,7 +424,16 @@ public final class LivePacenoteSource {
         let coords = snap.road.geoPoints
         let cumulative = GeoMath.cumulativeDistances(coords)
         let total = cumulative.last ?? 0
-        let lo = max(0, snap.distanceAlongRoad - backfillMeters)
+        // The window's start is aligned to the generator's resampling grid, and
+        // that is not a tidy-up: severity is measured on a 10m chord, so a gentle
+        // corner's grade depends on where the sample points fall, and they are
+        // multiples of that step from the start of whatever geometry it is handed.
+        // Unaligned, this road's "Flat" is called "Flat long" from one window and
+        // vanishes from the next, three metres along. Aligned, every window on a
+        // road shares one phase, and a free drive calls the road exactly as
+        // handing that road over whole would.
+        let step = PacenoteGenerator.resampleStepMeters
+        let lo = max(0, (snap.distanceAlongRoad - backfillMeters) / step).rounded(.down) * step
         let hi = min(total, snap.distanceAlongRoad + lookaheadMeters)
         guard hi - lo >= minimumWindowMeters else { return nil }
 
@@ -451,6 +464,7 @@ public final class LivePacenoteSource {
         notes = droppingCalled(notes, alreadyCalled: alreadyCalled)
 
         return Window(coordinates: points.map(\.clLocation), pacenotes: notes,
+                      startingProgressMeters: snap.distanceAlongRoad - lo,
                       roadID: snap.road.id, roadName: snap.road.name)
     }
 
