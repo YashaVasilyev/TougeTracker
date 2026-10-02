@@ -20,6 +20,11 @@ PHRASES = [
     "three left very long opens", "two right opens", "into three right",
     "into three right tightens", "followed by one left tightens",
     "square right", "100", "220",
+    # Junctions and signs. These resolve to single warning clips rather than to
+    # severities, and they are the words a free drive says on a back road — so
+    # the pack has to be checked for them like any other call.
+    "stop sign", "traffic lights", "give way", "T junction", "crossroads",
+    "merge", "roundabout",
 ]
 
 
@@ -54,6 +59,10 @@ for phrase in CommandLine.arguments.dropFirst() {
     subprocess.run(["swiftc", "-O",
                     os.path.join(root, "TougeTracker/Core/Geo/GeoMath.swift"),
                     os.path.join(root, "TougeTracker/Core/Pacenotes/VoicePack.swift"),
+                    # VoicePack resolves the warning words through RoadFeature,
+                    # so this compile needs it too — it stood up here the same
+                    # way the simulator's stale file list did.
+                    os.path.join(root, "TougeTracker/Core/Pacenotes/RoadFeature.swift"),
                     source, "-o", binary], check=True, cwd=root)
     out = subprocess.run([binary] + PHRASES, capture_output=True, text=True,
                          check=True, cwd=root).stdout.splitlines()

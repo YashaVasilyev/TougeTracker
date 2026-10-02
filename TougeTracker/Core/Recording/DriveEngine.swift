@@ -21,6 +21,10 @@ public final class DriveEngine: NSObject, CLLocationManagerDelegate {
     public private(set) var lateralG: Double = 0
     public private(set) var currentNote: String?
     public private(set) var nextNotes: [String] = []
+    /// The junction or sign ahead, spoken when it comes due. Kept separate from
+    /// `nextNotes` because it is not a corner: the HUD shows it in amber so the
+    /// two are never confused on a glance.
+    public private(set) var currentFeature: String?
     public private(set) var progress: Double = 0
     public private(set) var offRoute = false
     public private(set) var elapsed: TimeInterval = 0
@@ -29,6 +33,22 @@ public final class DriveEngine: NSObject, CLLocationManagerDelegate {
     public private(set) var locationAuthorized = false
     public private(set) var lastFixAccuracy: Double = -1
     public private(set) var locationTick: Int = 0
+    /// Compass heading in degrees, or nil when the device has none to give
+    /// (no magnetometer, or a reading it will not vouch for). Needed because a
+    /// stopped car has no GPS course but still has a direction to point in.
+    public private(set) var compassHeading: Double?
+    /// True once a compass reading has been judged usable. The navigation
+    /// camera distinguishes "no compass" from "compass reads zero", which are
+    /// very different things on a map.
+    public private(set) var compassHeadingValid = false
+    /// Course over ground in degrees, or nil when Core Location has none. Unlike
+    /// the compass this is measured along the road, so it is the honest answer
+    /// to "which way is the car going" whenever the car is moving.
+    public private(set) var courseDegrees: Double?
+    /// When the newest fix was taken, on the wall clock. The navigation camera
+    /// needs the *age* of a fix to extrapolate between them, which a "last
+    /// updated" counter cannot express.
+    public private(set) var lastFixTimestamp: TimeInterval = 0
     public var toast: String? = nil
 
     public private(set) var drivenPath: [CLLocationCoordinate2D] = []
@@ -118,6 +138,7 @@ public final class DriveEngine: NSObject, CLLocationManagerDelegate {
         samples.removeAll()
         drivenPath.removeAll()
         currentNote = nil
+        currentFeature = nil
         nextNotes = []
         progress = 0
         offRoute = false
@@ -198,6 +219,7 @@ public final class DriveEngine: NSObject, CLLocationManagerDelegate {
         pacenoteAnnotations = []
         drivenPath = []
         currentNote = nil
+        currentFeature = nil
         nextNotes = []
         progress = 0
         offRoute = false
@@ -250,6 +272,12 @@ public final class DriveEngine: NSObject, CLLocationManagerDelegate {
             }
             nextNotes = live.upcoming(count: 2)
                 .map { PacenoteGenerator.formatted($0, format: settings.pacenoteFormat) }
+            // The feature due now goes first: a stop sign is not a corner and
+            // must not wait for one to be called first.
+            if let feature = live.nextFeature(speed: currentSpeedMps) {
+                currentFeature = feature.feature.spoken
+                CoDriverSpeaker.shared.speakWarning(feature.feature.spoken)
+            }
             offRoute = live.offRoute
             // `progress` is deliberately left at zero. The live window is a
             // kilometre of road that keeps being rebuilt further up the road, so
@@ -301,6 +329,11 @@ public final class DriveEngine: NSObject, CLLocationManagerDelegate {
             lastGPS = loc
             latestLocation = loc
             lastLocation = loc.coordinate
+            // Course over ground: where the car is actually going, as opposed to
+            // where the phone is pointed. Core Location reports it as negative
+            // when it has none, which is most of the time below walking pace.
+            courseDegrees = loc.course >= 0 ? loc.course : nil
+            lastFixTimestamp = loc.timestamp.timeIntervalSince1970
             locationTick += 1
 
             if loc.speed >= 0 {
@@ -330,6 +363,31 @@ public final class DriveEngine: NSObject, CLLocationManagerDelegate {
         if (error as? CLError)?.code == .locationUnknown { return }
         let message = error.localizedDescription
         MainActor.assumeIsolated { toast = message }
+    }
+
+    // MARK: - Heading delegate
+
+    /// The compass, which `start()` has always asked for and this drive has
+    /// always thrown away.
+    ///
+    /// It was not needed when the map was a blue dot on a north-up map. It is
+    /// the whole of heading-up now: GPS course covers the car while it is
+    /// moving, and says nothing at all while it is stopped — which on a touge
+    /// is at every hairpin, at every junction, and at the start line.
+    nonisolated public func locationManager(_ manager: CLLocationManager,
+                                           didUpdateHeading newHeading: CLHeading) {
+        MainActor.assumeIsolated {
+            // `headingAccuracy` is negative when Core Location has no opinion,
+            // and a reading of "0°" is a real direction that must not be read as
+            // "no compass".
+            guard newHeading.headingAccuracy >= 0 else {
+                compassHeadingValid = false
+                return
+            }
+            compassHeading = newHeading.trueHeading >= 0 ? newHeading.trueHeading
+                                                        : newHeading.magneticHeading
+            compassHeadingValid = compassHeading != nil
+        }
     }
 
     // MARK: - Co-driver

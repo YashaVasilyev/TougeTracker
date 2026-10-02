@@ -68,6 +68,14 @@ public struct VoicePack {
     ]
     private static let directions = ["left": "Left", "right": "Right"]
 
+    /// The recorded warnings, by the word they are written with.
+    ///
+    /// Spelled out rather than derived from `RoadFeature` so the pack stays a
+    /// list of clips it actually holds: a feature the pack has no take for falls
+    /// out here and is read by the system voice instead.
+    private static let warnings = ["stop sign", "traffic lights", "give way",
+                                   "t junction", "crossroads", "merge", "roundabout"]
+
     // MARK: - Lookup
 
     /// The clips for one whole call, in the order they are spoken. Empty when
@@ -78,6 +86,9 @@ public struct VoicePack {
             if text.allSatisfy(\.isNumber), let metres = Int(text) {
                 return [nearestDistance(to: metres)].compactMap { $0 }
             }
+            // A junction or a stop sign is one clip, and the pacenote parse below
+            // would reject it for having no severity and no direction in it.
+            if let warning = warning(for: text) { return warning }
             guard let parsed = parse(text) else { return [] }
             return clips(connector: parsed.connector, grade: parsed.grade,
                          direction: parsed.direction, modifier: parsed.modifier,
@@ -113,6 +124,14 @@ public struct VoicePack {
         // Nothing in the pack covers this, so say nothing and let the caller
         // read the call out with the system voice rather than going quiet.
         return spoken.isEmpty ? [] : spoken + tail
+    }
+
+    /// The clip for a road warning, or nil when the pack has not got one.
+    private func warning(for text: String) -> [String]? {
+        let lowered = text.lowercased()
+        guard VoicePack.warnings.contains(lowered) else { return nil }
+        let clip = RoadFeature.spokenWords[lowered] ?? "Caution"
+        return available.contains(clip) ? [clip] : nil
     }
 
     /// The nearest recorded distance to `metres`, or nil if the pack has no

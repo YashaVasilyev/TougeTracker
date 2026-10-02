@@ -41,6 +41,22 @@ public final class CoDriverSpeaker: NSObject, AVSpeechSynthesizerDelegate,
     /// True when the recorded pack is available to speak from.
     public var hasRecordedVoice: Bool { pack != nil }
 
+    /// Says a junction or sign, as one clip or one sentence.
+    ///
+    /// The same two paths as a pacenote call: the recorded warning when the pack
+    /// has one, the system voice when it does not. A rally pack has no stop sign
+    /// in it, so this is usually the second — and saying "stop sign" plainly is
+    /// better than the clip's vaguer "caution".
+    public func speakWarning(_ phrase: String) {
+        guard AppSettings.shared.voiceEnabled else { return }
+        configureAudio()
+        if let pack, AppSettings.shared.useRecordedVoice, !pack.clips(for: phrase).isEmpty {
+            speakClips(pack.clips(for: phrase))
+        } else {
+            speakWithSystemVoice(phrase)
+        }
+    }
+
     public func speakCall(_ call: PacenoteCall, format: PacenoteFormat) {
         guard AppSettings.shared.voiceEnabled else { return }
         let text = phrase(for: call, format: format)

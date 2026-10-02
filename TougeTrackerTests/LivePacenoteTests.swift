@@ -260,6 +260,101 @@ final class LivePacenoteTests: XCTestCase {
         }
     }
 
+    // MARK: - Junctions and signs
+
+    func testTheRoutersManeuversBecomeWarnings() {
+        // Only the maneuvers that say something the pacenotes do not. A plain
+        // turn is a corner — the geometry calls it — and announcing both would
+        // say the same thing twice.
+        XCTAssertEqual(RoadFeature(routerManeuver: "end of road"), .tJunction)
+        XCTAssertEqual(RoadFeature(routerManeuver: "merge"), .merge)
+        XCTAssertEqual(RoadFeature(routerManeuver: "on ramp"), .merge)
+        XCTAssertEqual(RoadFeature(routerManeuver: "roundabout"), .roundabout)
+        XCTAssertNil(RoadFeature(routerManeuver: "turn"))
+        XCTAssertNil(RoadFeature(routerManeuver: "depart"))
+        XCTAssertNil(RoadFeature(routerManeuver: "arrive"))
+    }
+
+    func testSignsBecomeWarningsAndJunkDoesNot() {
+        XCTAssertEqual(RoadFeature(osmTag: "stop"), .stopSign)
+        XCTAssertEqual(RoadFeature(osmTag: "traffic_signals"), .trafficLights)
+        XCTAssertEqual(RoadFeature(osmTag: "give_way"), .giveWay)
+        XCTAssertNil(RoadFeature(osmTag: "crossing"))
+    }
+
+    func testFeaturesArePlacedAlongTheWindowAndNotBehindTheCar() throws {
+        // The router measures junctions from the start of its line, which is the
+        // road; the window is a slice of that road starting at `lo`. A junction
+        // the window starts after is dropped, and one behind the car is dropped —
+        // the driver has met it.
+        let coords = fixtureCoordinates("db1_74432352_School_House_Road")
+        let road = fixtureRoad("db1_74432352_School_House_Road")
+        let here = GeoMath.along(coords, distance: 700)
+        let ahead = GeoMath.along(coords, distance: 710)
+
+        let window = LivePacenoteSource.window(
+            at: here.clLocation, course: GeoMath.bearing(here, ahead),
+            roads: [road], lookaheadMeters: 1000,
+            features: [FeatureNote(distance: 650, feature: .tJunction),    // behind the car
+                       FeatureNote(distance: 1200, feature: .stopSign)])   // ahead
+
+        let built = try XCTUnwrap(window)
+        XCTAssertEqual(built.features.map(\.feature), [.stopSign])
+        XCTAssertGreaterThan(built.features[0].distance, built.startingProgressMeters,
+                             "a feature behind the car was offered as ahead")
+    }
+
+    func testAFeatureIsCalledAsItIsApproachedAndOnlyOnce() async throws {
+        // The whole feature path, driven as a drive: a window built by the real
+        // code from a routed line carrying a stop sign, then the car driven over
+        // it. The sign must be announced once, on the approach, not on every tick
+        // that it happens to be within range.
+        let coords = fixtureCoordinates("db1_74432352_School_House_Road")
+        let road = fixtureRoad("db1_74432352_School_House_Road")
+        // 900m along the road, which is inside any window the car reaches it in.
+        let sign = FeatureNote(distance: 900, feature: .stopSign)
+        let line = RoutePlanner.RoutedLine(road: road, features: [sign])
+        let source = LivePacenoteSource(
+            loader: { _ in [] },
+            lineLoader: { _, _, _ in line })
+
+        var called = 0
+        let total = GeoMath.lengthMeters(coords)
+        let step = max((80 / 3.6) * 0.1, 0.5)
+        var travelled = 0.0
+        while travelled <= min(total, 1300) {
+            let here = GeoMath.along(coords, distance: travelled)
+            let next = GeoMath.along(coords, distance: min(travelled + step, total))
+            let fix = location(here, course: GeoMath.bearing(here, next), speed: 80 / 3.6)
+            await source.rebuild(at: fix)
+            _ = source.update(location: fix, speed: 80 / 3.6)
+            if source.nextFeature(speed: 80 / 3.6) != nil { called += 1 }
+            await Task.yield()
+            travelled += step
+        }
+        XCTAssertEqual(called, 1, "the stop sign was announced \(called) times")
+    }
+
+    // MARK: - The voice
+
+    func testWarningsResolveToClipsThePackActuallyHolds() {
+        let pack = VoicePack(available: ["AtJunction", "AtTheCrossroad", "Caution"])
+        XCTAssertEqual(pack.clips(for: "stop sign"), ["Caution"])
+        XCTAssertEqual(pack.clips(for: "T junction"), ["AtJunction"])
+        XCTAssertEqual(pack.clips(for: "crossroads"), ["AtTheCrossroad"])
+        XCTAssertEqual(pack.clips(for: "merge"), ["AtJunction"])
+        // A word the pack knows nothing about falls through to the system voice
+        // rather than to some unrelated clip.
+        XCTAssertTrue(pack.clips(for: "loose gravel").isEmpty)
+    }
+
+    func testAPackWithoutTheClipFallsBackToReading() {
+        // The real rally pack has no stop sign in it. The warning must still be
+        // spoken — by the system voice — rather than dropped.
+        let pack = VoicePack(available: ["Left3"])
+        XCTAssertTrue(pack.clips(for: "stop sign").isEmpty)
+    }
+
     // MARK: - Roads the tiles do not carry
 
     /// Counts router calls, so an assertion can hold a reference to the same box
@@ -270,9 +365,12 @@ final class LivePacenoteTests: XCTestCase {
     }
 
     /// A source whose tiles are empty and whose router answers with `line`.
-    private func routedSource(line: [TougeRoad], calls: Counter) -> LivePacenoteSource {
-        LivePacenoteSource(loader: { _ in [] },
-                           lineLoader: { _, _, _ in calls.bump(); return line })
+    private func routedSource(line: [TougeRoad], calls: Counter,
+                              features: [FeatureNote] = []) -> LivePacenoteSource {
+        let routed = RoutePlanner.RoutedLine(road: line.first ?? RoadSignSource.emptyRoad,
+                                              features: features)
+        return LivePacenoteSource(loader: { _ in [] },
+                                  lineLoader: { _, _, _ in calls.bump(); return routed })
     }
 
     func testARoutedLineIsWindowedAndCalled() async {
@@ -294,8 +392,9 @@ final class LivePacenoteTests: XCTestCase {
         let coords = fixtureCoordinates("db1_74432352_School_House_Road")
         let road = fixtureRoad("db1_74432352_School_House_Road")
         let calls = Counter()
+        let routed = RoutePlanner.RoutedLine(road: road, features: [])
         let source = LivePacenoteSource(loader: { _ in [road] },
-                                        lineLoader: { _, _, _ in calls.bump(); return [road] })
+                                        lineLoader: { _, _, _ in calls.bump(); return routed })
 
         // Stop well short of the end: running out of tiled road is exactly when the
         // router *should* be asked, so this only measures the part of the drive
@@ -312,8 +411,9 @@ final class LivePacenoteTests: XCTestCase {
         let coords = fixtureCoordinates("db1_74432352_School_House_Road")
         let road = fixtureRoad("db1_74432352_School_House_Road")
         let calls = Counter()
+        let routed = RoutePlanner.RoutedLine(road: road, features: [])
         let source = LivePacenoteSource(loader: { _ in [road] },
-                                        lineLoader: { _, _, _ in calls.bump(); return [road] })
+                                        lineLoader: { _, _, _ in calls.bump(); return routed })
 
         let last = coords[coords.count - 1]
         let course = GeoMath.bearing(coords[coords.count - 2], last)

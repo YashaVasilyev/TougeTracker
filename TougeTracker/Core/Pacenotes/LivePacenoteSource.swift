@@ -41,7 +41,11 @@ public final class LivePacenoteSource {
     /// there is no second, slightly different way of turning a road into notes.
     public typealias LineLoader = @Sendable (_ coordinate: CLLocationCoordinate2D,
                                              _ courseDegrees: Double,
-                                             _ lookaheadMeters: Double) async -> [TougeRoad]
+                                             _ lookaheadMeters: Double) async -> RoutePlanner.RoutedLine
+
+    /// The signs and signals along a stretch of road, for the loader to ask in
+    /// the same round as the line itself.
+    public typealias SignLoader = @Sendable (_ polyline: [GeoPoint]) async -> [FeatureNote]
 
     /// The slice of road the notes are generated from.
     public struct Window: Sendable {
@@ -52,6 +56,8 @@ public final class LivePacenoteSource {
         public var startingProgressMeters: Double
         public var roadID: Int64
         public var roadName: String?
+        /// Junctions and signs on this stretch of road, in metres from its start.
+        public var features: [FeatureNote]
     }
 
     // MARK: - Tuning
@@ -144,6 +150,7 @@ public final class LivePacenoteSource {
     /// The fallback for roads the tiles do not carry. Nil means tiles-only, which
     /// is what the tests use unless they are specifically exercising this.
     private let lineLoader: LineLoader?
+    private let signLoader: SignLoader?
     private let now: Clock
     private let backfillMeters: Double
     private let toleranceMeters: Double
@@ -173,6 +180,11 @@ public final class LivePacenoteSource {
     /// rather than an unroutable road.
     private var networkFailed = false
     private var windowRoadName: String?
+    /// The features in the current window and the cursor into them. Separate
+    /// from the pacenotes because they are not corners: they are scheduled
+    /// against the same horizon but say something else entirely.
+    private var pendingFeatures: [FeatureNote] = []
+    private var nextFeatureIndex = 0
 
     /// Bumped whenever a new window is installed, so the HUD can tell a fresh
     /// line and a fresh set of corner markers from the ones it already has.
@@ -212,15 +224,16 @@ public final class LivePacenoteSource {
             let ahead = GeoMath.destination(GeoPoint.from(coordinate),
                                             lookahead + Self.networkRouteMarginMeters,
                                             course)
-            guard let road = try? await RoutePlanner.shared.road(from: coordinate,
-                                                                   to: ahead.clLocation)
-            else { return [] }
-            return [road]
+            return (try? await RoutePlanner.shared.line(from: coordinate, to: ahead.clLocation))
+                ?? RoutePlanner.RoutedLine(road: RoadSignSource.emptyRoad, features: [])
+        }, signLoader: { polyline in
+            await RoadSignSource.shared.signs(along: polyline)
         }, callDistanceScale: callDistanceScale)
     }
 
     public init(loader: @escaping RoadLoader,
                 lineLoader: LineLoader? = nil,
+                signLoader: SignLoader? = nil,
                 callDistanceScale: Double = 1.0,
                 backfillMeters: Double = LivePacenoteSource.backfillMeters,
                 lookaheadMeters: Double? = nil,
@@ -228,6 +241,7 @@ public final class LivePacenoteSource {
                 now: @escaping Clock = { Date() }) {
         self.loader = loader
         self.lineLoader = lineLoader
+        self.signLoader = signLoader
         self.callDistanceScale = callDistanceScale
         self.backfillMeters = backfillMeters
         self.toleranceMeters = toleranceMeters
@@ -327,22 +341,32 @@ public final class LivePacenoteSource {
         lastNetworkAt = now()
         lastNetworkPoint = GeoPoint.from(location.coordinate)
         let course = Self.normalizedCourse(location.course)
-        let lines = await lineLoader(location.coordinate, course, lookaheadMeters)
-        networkFailed = lines.isEmpty
+        let line = await lineLoader(location.coordinate, course, lookaheadMeters)
+        networkFailed = line.road.geoPoints.count < 2
         if networkFailed, !warnedUnavailable {
             warnedUnavailable = true
             onRoadUnavailable?()
         }
 
+        // One extra request per window for the signs, asked while the geometry is
+        // already in hand — two round trips a drive, both behind the same rate
+        // limit, and neither on the tick.
+        var signs: [FeatureNote] = []
+        if let signLoader, !networkFailed {
+            signs = await signLoader(line.road.geoPoints)
+        }
+
         // Same call, same trimming, same orientation test as the tile path: a
         // routed line is just a road that happened to arrive over the network.
         guard let window = Self.window(at: location.coordinate,
-                                       course: location.course,
-                                       roads: lines,
+                                       course: course,
+                                       roads: [line.road],
                                        backfillMeters: backfillMeters,
                                        lookaheadMeters: lookaheadMeters,
                                        toleranceMeters: toleranceMeters,
-                                       alreadyCalled: calledApexes)
+                                       alreadyCalled: calledApexes,
+                                       features: line.features,
+                                       extraFeatures: signs)
         else { return false }
         return install(window, at: location)
     }
@@ -368,6 +392,12 @@ public final class LivePacenoteSource {
                                       callDistanceScale: callDistanceScale,
                                       startingProgressMeters: window.startingProgressMeters)
         windowRoadName = window.roadName
+        pendingFeatures = window.features
+        nextFeatureIndex = 0
+        // A feature the driver has already met stays met: the new window is
+        // built around the car, and everything in the backfill is behind them.
+        while nextFeatureIndex < pendingFeatures.count,
+              pendingFeatures[nextFeatureIndex].distance < navigatorProgress { nextFeatureIndex += 1 }
         lastBuildPoint = GeoPoint.from(location.coordinate)
         windowRevision += 1
         return true
@@ -391,6 +421,27 @@ public final class LivePacenoteSource {
     }
 
     /// The road ahead, for the HUD's line. Empty until the first window lands.
+    /// A warning due now, if the next one on the road has come close enough.
+    ///
+    /// Scheduled against the same horizon as a corner and with the same
+    /// tolerance for one just behind the car, so a stop sign is called as a stop
+    /// sign rather than as a corner with no severity. One at a time, and never
+    /// more than the next: a run of give-way signs on a village street is called
+    /// one per approach, which is the only rate a driver can use.
+    public func nextFeature(speed: Double) -> FeatureNote? {
+        guard let navigator, nextFeatureIndex < pendingFeatures.count else { return nil }
+        let horizon = max(120, min(400, speed * 8)) * callDistanceScale
+        let remaining = pendingFeatures[nextFeatureIndex].distance - navigator.progressDistance
+        guard remaining <= horizon, remaining > -5 else { return nil }
+        nextFeatureIndex += 1
+        return pendingFeatures[nextFeatureIndex - 1]
+    }
+
+    /// The features still ahead, for the HUD.
+    public var upcomingFeatures: [FeatureNote] {
+        Array(pendingFeatures.dropFirst(nextFeatureIndex).prefix(2))
+    }
+
     public var routeCoordinates: [CLLocationCoordinate2D] { navigator?.coordinates ?? [] }
 
     public var annotations: [TurnMarker] {
@@ -398,6 +449,8 @@ public final class LivePacenoteSource {
             TurnMarker(coordinate: $0.apex.clLocation, title: $0.text, subtitle: "")
         }
     }
+
+    private var navigatorProgress: Double { navigator?.progressDistance ?? 0 }
 
     public var offRoute: Bool { navigator?.offRoute ?? false }
     public var isActive: Bool { navigator != nil }
@@ -416,7 +469,9 @@ public final class LivePacenoteSource {
                               backfillMeters: Double = backfillMeters,
                               lookaheadMeters: Double,
                               toleranceMeters: Double = toleranceMeters,
-                              alreadyCalled: [GeoPoint] = []) -> Window? {
+                              alreadyCalled: [GeoPoint] = [],
+                              features: [FeatureNote] = [],
+                              extraFeatures: [FeatureNote] = []) -> Window? {
         guard let snap = RoadSegmentBuilder.snap(coordinate, in: roads,
                                                  toleranceMeters: toleranceMeters)
         else { return nil }
@@ -463,9 +518,21 @@ public final class LivePacenoteSource {
         var notes = PacenoteGenerator.generate(points).turns
         notes = droppingCalled(notes, alreadyCalled: alreadyCalled)
 
+        // The router reports junctions in distances from the start of *its* line,
+        // which is the road, and the window is a slice of that road starting at
+        // `lo` — so the two share an origin and nothing needs converting. A sign
+        // found on the window's own geometry is already in window coordinates.
+        // Both are pulled back inside the window and behind the car dropped.
+        let here = snap.distanceAlongRoad - lo
+        var windowFeatures = (features + extraFeatures)
+            .map { FeatureNote(distance: $0.distance - lo, feature: $0.feature) }
+            .filter { $0.distance > 10 && $0.distance < hi - lo }
+            .sorted { $0.distance < $1.distance }
+
         return Window(coordinates: points.map(\.clLocation), pacenotes: notes,
-                      startingProgressMeters: snap.distanceAlongRoad - lo,
-                      roadID: snap.road.id, roadName: snap.road.name)
+                      startingProgressMeters: here,
+                      roadID: snap.road.id, roadName: snap.road.name,
+                      features: windowFeatures)
     }
 
     public static func isAlreadyCalled(_ apex: GeoPoint, in called: [GeoPoint]) -> Bool {
@@ -578,6 +645,8 @@ public final class LivePacenoteSource {
         lastBuildPoint = nil
         lastNetworkAt = nil
         lastNetworkPoint = nil
+        pendingFeatures = []
+        nextFeatureIndex = 0
         networkFailed = false
         windowRoadName = nil
         windowRevision = 0

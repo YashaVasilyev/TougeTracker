@@ -25,6 +25,19 @@ GRADES = {
 }
 DIRECTIONS = {"left": "Left", "right": "Right"}
 
+# Junction and sign warnings, which are one recorded clip rather than a severity.
+# Must stay in step with `spokenWords` in
+# TougeTracker/Core/Pacenotes/RoadFeature.swift.
+WARNINGS = {
+    "stop sign": "Caution",
+    "traffic lights": "Caution",
+    "give way": "Caution",
+    "t junction": "AtJunction",
+    "crossroads": "AtTheCrossroad",
+    "merge": "AtJunction",
+    "roundabout": "AtTheCrossroad",
+}
+
 
 class Pack:
     """The recorded clips, looked up by name and tolerant of what is missing.
@@ -161,6 +174,14 @@ def clips_for_phrase(pack, phrase):
         if item.isdigit():
             # A straight is called as a distance alone.
             out.append(pack.distance(int(item)))
+            continue
+        # A junction or a stop sign is one clip, and the pacenote parse below
+        # would reject it for having no severity and no direction in it.
+        warning = WARNINGS.get(item.lower())
+        if warning:
+            # `get` returns a path, like every other clip here — the parity check
+            # takes the basename of it, and a bare name would come back chopped.
+            out.append(pack.get(warning))
             continue
         parsed = parse_item(item)
         if parsed:

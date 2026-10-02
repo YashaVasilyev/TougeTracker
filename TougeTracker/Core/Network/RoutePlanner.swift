@@ -55,6 +55,17 @@ public final class RoutePlanner: @unchecked Sendable {
     /// Cache keyed by the snapped endpoints, so re-running the same two taps
     /// does not re-hit the router.
     private var cache: [String: TougeRoad] = [:]
+    /// Junctions for a cached line. Held beside the road rather than inside it
+    /// so `TougeRoad` stays the plain geometry every other caller expects.
+    private var cachedFeatures: [String: [FeatureNote]] = [:]
+    /// The junctions from the request currently being decoded.
+    ///
+    /// `route(through:)` is the one place that parses the response, and this is
+    /// how they reach `line(through:)`. The router is called one drive at a time
+    /// from the live source, and the value is consumed immediately after the
+    /// await — but it is deliberately not folded into a return type that
+    /// `route(from:to:)` would then have to unpack and throw away.
+    private var lastFeatures: [FeatureNote] = []
     private let cacheLock = NSLock()
 
     // MARK: - Public API
@@ -90,6 +101,44 @@ public final class RoutePlanner: @unchecked Sendable {
         let key = cacheKey(points)
         if let hit = cached(key) { return hit }
 
+        let line = try await line(through: points, name: name)
+        store(key, road: line.road)
+        return line.road
+    }
+
+    /// A routed driving line and the junctions on it.
+    ///
+    /// The geometry is the road; the features are what the co-driver cannot see
+    /// in it — a road ending, a lane joining — and they come from the same
+    /// response. There is no second request: the router lists every junction on
+    /// the line whether or not anyone asks it to.
+    public struct RoutedLine: Sendable {
+        public var road: TougeRoad
+        /// Junctions in metres from the start of `road`.
+        public var features: [FeatureNote]
+    }
+
+    /// The two-point spelling of `line(through:)`, so a caller that only has a
+    /// start and an end reads as what it is.
+    public func line(from start: CLLocationCoordinate2D,
+                     to end: CLLocationCoordinate2D,
+                     name: String? = nil) async throws -> RoutedLine {
+        try await line(through: [start, end], name: name)
+    }
+
+    /// Routes a driving line through an ordered list of points and returns it
+    /// with the junctions along it.
+    public func line(through points: [CLLocationCoordinate2D],
+                     name: String? = nil) async throws -> RoutedLine {
+        // The contract is "at least two points". A one-point route has no
+        // direction, and letting it through would return a degenerate line.
+        guard points.count >= 2 else { throw Failure.tooShort }
+
+        let key = cacheKey(points)
+        if let hit = cached(key) {
+            return RoutedLine(road: hit, features: cachedFeatures[key] ?? [])
+        }
+
         let routed = try await route(through: points)
         guard GeoMath.lengthMeters(routed) >= minimumLengthMeters else {
             throw Failure.tooShort
@@ -101,8 +150,10 @@ public final class RoutePlanner: @unchecked Sendable {
         let finalName = (trimmed?.isEmpty == false) ? trimmed! : defaultName(for: routed)
 
         let road = makeRoad(points: routed, name: finalName)
+        let features = lastFeatures
+        cachedFeatures[key] = features
         store(key, road: road)
-        return road
+        return RoutedLine(road: road, features: features)
     }
 
 
@@ -189,6 +240,18 @@ public final class RoutePlanner: @unchecked Sendable {
             /// (see `makeRoad`) so the displayed length always comes from the
             /// app's own haversine, not from a server's rounding.
             let distance: Double?
+            /// One per road the line uses, so every junction on the route is a
+            /// boundary between two of them. Absent unless `steps=true`.
+            let steps: [Step]?
+        }
+
+        struct Step: Decodable {
+            let distance: Double?
+            let maneuver: Maneuver?
+        }
+
+        struct Maneuver: Decodable {
+            let type: String?
         }
     }
 
@@ -215,7 +278,12 @@ public final class RoutePlanner: @unchecked Sendable {
         // the measured length.
         components.queryItems = [
             URLQueryItem(name: "overview", value: "full"),
-            URLQueryItem(name: "geometries", value: "geojson")
+            URLQueryItem(name: "geometries", value: "geojson"),
+            // The router sends a full list of every junction on the line only
+            // when asked. It was returning an empty array before, unread, on
+            // every request — the data for the intersection warnings was already
+            // coming back and being thrown away.
+            URLQueryItem(name: "steps", value: "true")
         ]
         // The endpoint must end in a slash. Resolving a relative path against
         // a slash-less base replaces the base's last component, which silently
@@ -262,12 +330,44 @@ public final class RoutePlanner: @unchecked Sendable {
         guard let coordinates = decoded.routes?.first?.geometry.coordinates,
               !coordinates.isEmpty else { throw Failure.noRoute }
 
-        return coordinates.compactMap { pair in
+        let line = coordinates.compactMap { pair -> GeoPoint? in
             // Each position is [lon, lat]; a malformed pair is dropped rather
             // than crashing the tap.
             guard pair.count >= 2 else { return nil }
             return GeoPoint(lon: pair[0], lat: pair[1])
         }
+        lastFeatures = Self.features(from: decoded.routes?.first?.steps)
+        return line
+    }
+
+    /// Junctions along the line, in metres from its start.
+    ///
+    /// A step's `distance` is the length of the road *before* it, so the running
+    /// total is where the road changes — which is where the junction is. Walking
+    /// a list of steps rather than asking the server for positions is what makes
+    /// this work: OSRM gives geometry and steps separately, and the two are
+    /// related by nothing but their order.
+    private static func features(from steps: [Route.Step]?) -> [FeatureNote] {
+        var travelled = 0.0
+        var out: [FeatureNote] = []
+        for (index, step) in (steps ?? []).enumerated() {
+            if index > 0, let type = step.maneuver?.type,
+               let feature = RoadFeature(routerManeuver: type) {
+                out.append(FeatureNote(distance: travelled, feature: feature))
+            }
+            travelled += step.distance ?? 0
+        }
+        return out
+    }
+
+    /// Runs an Overpass query and returns its raw JSON.
+    ///
+    /// Public because the live pacenote source asks the same service a different
+    /// question — the signs on this road rather than the name of it — and two
+    /// copies of "post to Overpass" means one of them is wrong in a way nothing
+    /// notices.
+    public func overpass(_ query: String) async throws -> Data {
+        try await send(postRequest(url: overpassEndpoint, body: query))
     }
 
     /// Builds a POST for the Overpass form-encoded `data` convention.
@@ -278,9 +378,31 @@ public final class RoutePlanner: @unchecked Sendable {
         // Overpass rejects a generic/absent agent with HTTP 406.
         request.setValue("TougeTracker/1.0 (iOS touge pacenote app)",
                          forHTTPHeaderField: "User-Agent")
-        let encoded = body.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? body
-        request.httpBody = Data("data=\(encoded)".utf8)
+        request.httpBody = Data("data=\(Self.formEncoded(body))".utf8)
         return request
+    }
+
+    /// Percent-encodes only what a form body actually reserves.
+    ///
+    /// This was `addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)`,
+    /// which is the wrong tool: it escapes `[ ] ~ ( ) | ^ $` and the spaces — all
+    /// of which are the query language itself. Overpass does not reject that, it
+    /// answers with an HTML error page, and an HTML error page parses to nothing,
+    /// so every query this app ever sent came back empty and said so by saying
+    /// nothing at all. The road-name lookup has been quietly returning nil for the
+    /// same reason since it was written.
+    private static func formEncoded(_ body: String) -> String {
+        var out = ""
+        for byte in body.utf8 {
+            let scalar = UnicodeScalar(byte)
+            switch scalar {
+            case "&", "+", "%", "=":
+                out += String(format: "%%%02X", byte)
+            default:
+                out.unicodeScalars.append(scalar)
+            }
+        }
+        return out
     }
 
     private func send(_ request: URLRequest) async throws -> Data {
