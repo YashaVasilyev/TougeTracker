@@ -74,39 +74,60 @@ public enum RoadSegmentBuilder {
     public static func extract(from start: Snapped, to end: Snapped) throws -> [GeoPoint] {
         guard start.road.id == end.road.id else { throw Failure.differentRoads }
 
-        let coords = start.road.geoPoints
-        guard coords.count >= 2 else { throw Failure.tooShort }
-
-        // Build the canonical ascending list first (lower endpoint → interior
-        // vertices → upper endpoint), then reverse if the user tapped the end
-        // first. Reversing a list built in tap order instead would also reverse
-        // the interior vertices and yield a non-monotonic polyline.
+        // Orientation follows the tap order, so tapping the far end first
+        // reverses the segment — which is what the driver wants, since
+        // pacenotes are direction-sensitive.
         let forward = end.distanceAlongRoad >= start.distanceAlongRoad
-        let (lo, hi) = forward ? (start, end) : (end, start)
+        guard let points = stretch(of: start.road, from: start.distanceAlongRoad,
+                                   to: end.distanceAlongRoad, forward: forward)
+        else { throw Failure.tooShort }
+        return points
+    }
+
+    /// The stretch of `road`'s geometry between two distances along it.
+    ///
+    /// The distance-based form of `extract(from:to:)`, for the callers that have
+    /// a place rather than a tap: `extract` needs two projected endpoints to
+    /// work from, and the live pacenote source only has a distance — how far
+    /// along this road the car is, and how far it wants to see.
+    ///
+    /// Endpoints are interpolated onto the road (`GeoMath.along`) rather than
+    /// projected onto a segment, so `lo` is clamped to the start of the road and
+    /// `hi` to its end: a window that runs off either end is a shorter window,
+    /// never one with a fabricated point hanging off the map.
+    public static func stretch(of road: TougeRoad, from startMeters: Double,
+                               to endMeters: Double, forward: Bool) -> [GeoPoint]? {
+        let coords = road.geoPoints
+        guard coords.count >= 2 else { return nil }
+
+        let total = GeoMath.lengthMeters(coords)
+        let lo = max(0, min(startMeters, endMeters))
+        let hi = min(total, max(startMeters, endMeters))
+        guard hi > lo else { return nil }
         let cumulative = GeoMath.cumulativeDistances(coords)
 
+        // Built in road order and reversed afterwards, for the same reason
+        // `extract` does it: reversing a list built in the other order would
+        // also put the interior vertices in the wrong sequence, yielding a
+        // non-monotonic polyline.
+        //
         // Interior vertices are chosen by distance-along-road, strictly between
-        // the two taps. Selecting them by segment *index* instead breaks when a
-        // tap lands exactly on a vertex: the tapped vertex would then be
-        // emitted a second time by the index range below.
-        var points: [GeoPoint] = [lo.point]
-        for i in 1..<(coords.count - 1)
-        where cumulative[i] > lo.distanceAlongRoad && cumulative[i] < hi.distanceAlongRoad {
+        // the two ends. Selecting them by segment *index* instead emits a vertex
+        // twice whenever an end lands exactly on one.
+        var points: [GeoPoint] = [GeoMath.along(coords, distance: lo)]
+        for i in 1..<(coords.count - 1) where cumulative[i] > lo && cumulative[i] < hi {
             points.append(coords[i])
         }
-        points.append(hi.point)
+        points.append(GeoMath.along(coords, distance: hi))
 
         if !forward { points.reverse() }
 
-        // Drop duplicated vertices. When both taps land on the same segment the
-        // projected points can coincide with the neighbouring road vertex, and
-        // `projectOnSegment` may also return an exact endpoint — either way a
-        // zero-length segment would corrupt the pacenote resampling.
+        // A zero-length segment would corrupt the pacenote resampling, and both
+        // ends can land exactly on a vertex.
         dedupeNear(&points, fromEnd: true)
         dedupeNear(&points, fromEnd: false)
 
-        guard points.count >= 2 else { throw Failure.tooShort }
-        return points
+        return points.count >= 2 ? points : nil
     }
 
     private static func dedupeNear(_ points: inout [GeoPoint], fromEnd: Bool) {

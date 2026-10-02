@@ -44,6 +44,14 @@ public final class DriveEngine: NSObject, CLLocationManagerDelegate {
     private let locationMgr = CLLocationManager()
     private let motion = MotionService()
     private var navigator: PacenoteNavigator?
+    /// Pacenotes for a drive with no route, built from the road ahead as the car
+    /// reaches it. Non-nil exactly when `navigator` is nil because the drive was
+    /// started without a route — never both, so a planned drive is never second
+    /// guessed by a live window.
+    private var liveSource: LivePacenoteSource?
+    /// The window revision the HUD was last drawn from, so the route line and the
+    /// corner markers are refreshed when a new window lands and not on every tick.
+    private var liveWindowRevision = 0
     private var timer: Timer?
 
     private var samples: [TelemetrySample] = []
@@ -80,10 +88,22 @@ public final class DriveEngine: NSObject, CLLocationManagerDelegate {
             navigator = PacenoteNavigator(coordinates: r.coordinates)
             navigator?.callDistanceScale = settings.callDistanceScale
             routeCoordinates = r.coordinates
+            liveSource = nil
         } else {
             navigator = nil
             routeCoordinates = []
+            // No route is not "no pacenotes". The live source reads the road ahead
+            // out of the bundled tiles and generates for it with the same
+            // generator a saved route goes through, so a free drive is called
+            // rather than silent — for as long as the tiles carry the road being
+            // driven, which is the honest limit of what is knowable offline.
+            let live = LivePacenoteSource(callDistanceScale: settings.callDistanceScale)
+            live.onRoadDataAbsent = { [weak self] in
+                self?.toast = "No road data in this build — live pacenotes are off."
+            }
+            liveSource = live
         }
+        liveWindowRevision = 0
         pacenoteAnnotations = navigator?.pacenotes.enumerated().map { _, note in
             TurnMarker(coordinate: note.apex.clLocation,
                        title: note.text, subtitle: "")
@@ -166,6 +186,8 @@ public final class DriveEngine: NSObject, CLLocationManagerDelegate {
         state = .idle
         lastDrive = nil
         navigator = nil
+        liveSource = nil
+        liveWindowRevision = 0
         routeCoordinates = []
         pacenoteAnnotations = []
         drivenPath = []
@@ -216,6 +238,26 @@ public final class DriveEngine: NSObject, CLLocationManagerDelegate {
                 .dropFirst(min(nav.nextNoteIndex, nav.pacenotes.count))
                 .prefix(2)
                 .map { PacenoteGenerator.formatted($0, format: settings.pacenoteFormat) }
+        } else if let live = liveSource {
+            if let call = live.update(location: loc, speed: currentSpeedMps) {
+                announce(call)
+            }
+            nextNotes = live.upcoming(count: 2)
+                .map { PacenoteGenerator.formatted($0, format: settings.pacenoteFormat) }
+            offRoute = live.offRoute
+            // `progress` is deliberately left at zero. The live window is a
+            // kilometre of road that keeps being rebuilt further up the road, so
+            // its fraction complete is not a thing the driver is anywhere on —
+            // a bar that jumped back to the start every few hundred metres
+            // would be a lie about where they were.
+            if live.windowRevision != liveWindowRevision {
+                liveWindowRevision = live.windowRevision
+                routeCoordinates = live.routeCoordinates
+                pacenoteAnnotations = live.annotations
+                // The first road the window came from names the drive. Better a
+                // road than "Drive" for a run with no route picked.
+                if currentRouteName == nil { currentRouteName = live.roadName }
+            }
         }
 
         let m = motion.latest

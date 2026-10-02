@@ -23,7 +23,9 @@ struct DriveSetupView: View {
                 }
 
                 Section {
-                    Button("Free Drive — pacenotes off", systemImage: "aq.hifispeaker") { startFree() }
+                    // No route does not mean no pacenotes: the drive reads the
+                    // road ahead out of the bundled tiles and calls it as it goes.
+                    Button("Free Drive — live pacenotes", systemImage: "aq.hifispeaker") { startFree() }
                     Button("Browse roads…", systemImage: "magnifyingglass") { showBrowser = true }
                 }
 

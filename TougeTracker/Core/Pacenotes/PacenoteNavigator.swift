@@ -74,6 +74,13 @@ public final class PacenoteNavigator {
         max(120, min(400, mps * 8)) * callDistanceScale
     }
 
+    /// The furthest ahead a note is ever called, at any speed.
+    ///
+    /// The live pacenote source sizes its window against this: a window shorter
+    /// than the call distance runs out mid-corner, and the driver gets a gap
+    /// where the co-driver has nothing to say.
+    public var maximumCallDistance: Double { 400 * callDistanceScale }
+
     /// Feed a location fix; returns the rally call to speak (if any).
     @discardableResult
     public func update(location: CLLocation, speed: Double) -> PacenoteCall? {

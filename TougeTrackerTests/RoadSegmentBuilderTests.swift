@@ -104,6 +104,48 @@ final class RoadSegmentBuilderTests: XCTestCase {
         }
     }
 
+    // MARK: - Distance-based stretch
+
+    /// The live pacenote source asks for "this bit of this road" by distance
+    /// rather than by tap. It has to behave like `extract`, and it has to stop
+    /// at the ends of the road rather than invent a point past them.
+    func testStretchBetweenDistancesMatchesExtract() throws {
+        let road = straightRoad()   // 10 vertices, ~111m apart, ~1.1km long
+        let a = RoadSegmentBuilder.snap(at(0, 0.001), in: [road], toleranceMeters: 50)!
+        let b = RoadSegmentBuilder.snap(at(0, 0.004), in: [road], toleranceMeters: 50)!
+        let tapped = try RoadSegmentBuilder.extract(from: a, to: b)
+        let byDistance = RoadSegmentBuilder.stretch(of: road, from: a.distanceAlongRoad,
+                                                    to: b.distanceAlongRoad, forward: true)
+        XCTAssertEqual(tapped.map(\.lon), byDistance?.map(\.lon))
+    }
+
+    func testStretchIsClampedToTheEndsOfTheRoad() throws {
+        let road = straightRoad()
+        let total = GeoMath.lengthMeters(road.geoPoints)
+        // A window that runs off both ends comes back the whole road, not the
+        // road plus a fabricated stretch beyond it.
+        let whole = RoadSegmentBuilder.stretch(of: road, from: -500, to: total + 500,
+                                               forward: true)
+        XCTAssertEqual(whole?.first?.lon, road.geoPoints.first?.lon)
+        XCTAssertEqual(whole?.last?.lon, road.geoPoints.last?.lon)
+    }
+
+    func testStretchReversesForTheOtherDirection() throws {
+        let road = straightRoad()
+        let a = RoadSegmentBuilder.snap(at(0, 0.001), in: [road], toleranceMeters: 50)!
+        let b = RoadSegmentBuilder.snap(at(0, 0.004), in: [road], toleranceMeters: 50)!
+        let forward = RoadSegmentBuilder.stretch(of: road, from: a.distanceAlongRoad,
+                                                 to: b.distanceAlongRoad, forward: true)!
+        let backward = RoadSegmentBuilder.stretch(of: road, from: a.distanceAlongRoad,
+                                                  to: b.distanceAlongRoad, forward: false)!
+        XCTAssertEqual(forward, backward.reversed())
+    }
+
+    func testStretchWithNoLengthIsRejected() throws {
+        XCTAssertNil(RoadSegmentBuilder.stretch(of: straightRoad(), from: 500, to: 500,
+                                                 forward: true))
+    }
+
     // MARK: - Length
 
     func testBuiltRoadCarriesMeasuredLength() throws {
